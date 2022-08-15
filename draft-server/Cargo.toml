@@ -1,0 +1,19 @@
+[package]
+name = "draft-server"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+color-eyre = "0.6.2"
+hyper = "0.14.20"
+tracing-honeycomb = "0.4.3"
+draft-core =  { version = "0.1.0", path = "../draft-core" }
+tokio = { version = "1.20.1", features = ["full"] }
+libhoney-rust = { version = "0.1.6" }
+tracing-subscriber = { version = "*" }
+tracing = { version = "*" }
+anyhow = { version = "*" }
+rmp-serde = { version = "*" }
+serde = { version = "*", features = ["derive"] }
