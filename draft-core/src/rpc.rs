@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use crate::node::*;
 // use color_eyre::Result;
 use serde::{Serialize, Deserialize};
@@ -51,7 +53,7 @@ impl RaftRPC for RaftNode {
         if request.term < self.persistent_state.current_term {
             // The candidate is straight up out-of-date.
             // Inform it of the latest term that we know of.
-            return Err(
+ &           return Err(
                 RequestVoteRPCError::NodeOutOfDate { 
                     self_id: self.metadata.id, 
                     handler_term: self.persistent_state.current_term, 
@@ -96,15 +98,14 @@ impl RaftRPC for RaftNode {
 
                 // Let's match the terms of the last entries.
                 let self_last_log_entry_term = self.persistent_state.log.last().expect("log should not be empty").0;
+                let request_last_log_term = request.last_log_term;
 
-                match request.last_log_term == self_last_log_entry_term {
-                    true => {
-                        // The terms of the last entry are the same. In this case,
+                match self_last_log_entry_term.cmp(&request_last_log_term) {
+                    Ordering::Equal => {
+                        // The terms of the last entries are the same. In this case,
                         // the longer log is more fresh. (Section 5.4.1)
-                        let own_log_size = self_log_len;
                         let candidate_log_size = request.last_log_index;
-
-                        if own_log_size > candidate_log_size {
+                        if self_log_len > candidate_log_size {
                             return Err(
                                 RequestVoteRPCError::CandidateNodeHasStaleLog { 
                                     self_id: self.metadata.id, 
@@ -116,25 +117,25 @@ impl RaftRPC for RaftNode {
                                 }
                             );
                         }
-
-                    },
-                    false => {
-                        // The terms of the last entry are different. In this case,
-                        // the higher term is more fresh. (Section 5.4.1)
-                        if self_last_log_entry_term > request.last_log_term {
-                            return Err(
-                                RequestVoteRPCError::CandidateNodeHasStaleLog { 
-                                    self_id: self.metadata.id, 
-                                    requested_node_id: request.candidate_id, 
-                                    requested_last_log_entry_term: request.last_log_term, 
-                                    self_last_log_entry_term, 
-                                    requested_num_log_entries: request.last_log_index, 
-                                    self_num_log_entries: self.persistent_state.log.len()
-                                }
-                            )
-                        }
                     }
-                }
+                    Ordering::Greater => {
+                        // We have a higher term (for the last log entry) than the candidate's.
+                        // Thus our log is more fresh. Notify the candidate. (Section 5.4.1)
+                        return Err(
+                            RequestVoteRPCError::CandidateNodeHasStaleLog { 
+                                self_id: self.metadata.id, 
+                                requested_node_id: request.candidate_id, 
+                                requested_last_log_entry_term: request.last_log_term, 
+                                self_last_log_entry_term, 
+                                requested_num_log_entries: request.last_log_index, 
+                                self_num_log_entries: self.persistent_state.log.len()
+                            }
+                        )
+                    }
+                    Ordering::Less => {
+                        // The candidate has a higher term. So the candidate has a fresher log.
+                    }
+                };
             },
             // In any other case, there can't ever be a rejection.
             _ => {}
