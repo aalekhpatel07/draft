@@ -1,6 +1,6 @@
 use tokio::{sync::mpsc::{self, UnboundedSender}, net::TcpListener, io::AsyncReadExt};
 use draft_core::*;
-use tracing::{instrument, Level, event, error, info};
+use tracing::{instrument, error, info};
 use std::net::SocketAddr;
 use anyhow::Result;
 use draft_server::{RPCSenderChannels, setup_logging};

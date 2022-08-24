@@ -57,7 +57,7 @@ impl RaftRPC for RaftNode {
         if request.term < self.persistent_state.current_term {
             // The candidate is straight up out-of-date.
             // Inform it of the latest term that we know of.
-            &return Err(RequestVoteRPCError::NodeOutOfDate {
+            let _ = return Err(RequestVoteRPCError::NodeOutOfDate {
                 self_id: self.metadata.id,
                 handler_term: self.persistent_state.current_term,
                 requested_term: request.term,
@@ -144,10 +144,10 @@ impl RaftRPC for RaftNode {
             // In any other case, there can't ever be a rejection.
             _ => {}
         }
-        return Ok(VoteResponse {
+        Ok(VoteResponse {
             vote_granted: true,
             term: self.persistent_state.current_term,
-        });
+        })
     }
 }
 
