@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use hashbrown::HashMap;
 use derive_builder::Builder;
 use std::path::PathBuf;
-use anyhow::Result;
 
 
 pub type Log<T> = (usize, T);
@@ -43,8 +42,9 @@ impl NodeMetadataBuilder {
 pub struct PersistentState<T> {
     #[builder(default = "vec![]")]
     pub log: Vec<Log<T>>,
+    #[builder(default = "0")]
     pub current_term: usize,
-    #[builder(default)]
+    #[builder(default = "None")]
     pub voted_for: Option<usize>,
 }
 
@@ -86,7 +86,7 @@ pub struct RaftNode {
 
 
 impl RaftNode {
-    pub fn save_to_disk(&self) -> Result<usize> {
+    pub fn save_to_disk(&self) -> color_eyre::Result<usize> {
         let file_path = self.metadata.log_file_path.clone();
         let as_bytes = rmp_serde::to_vec(self)?;
         let total_bytes = as_bytes.len();
@@ -96,7 +96,7 @@ impl RaftNode {
         )?;
         Ok(total_bytes)
     }
-    pub fn reload_from_disk(&self) -> Result<Self> {
+    pub fn reload_from_disk(&self) -> color_eyre::Result<Self> {
         let file_path = self.metadata.log_file_path.clone();
         let as_bytes = std::fs::read(file_path)?;
         let res = rmp_serde::decode::from_slice(&as_bytes)?;

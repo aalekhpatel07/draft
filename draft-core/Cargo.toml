@@ -4,14 +4,22 @@ version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[profile.dev.package.backtrace]
+opt-level = 3
 
 [dependencies]
-color-eyre = "0.6.2"
-tracing-honeycomb = "0.4.3"
-serde = { version = "^1", features = ["derive"]}
 hashbrown = { version = "*", features = ["serde"]}
+async-trait = { version = "*"}
+
+# Builder pattern.
 derive_builder = { version = "0.11.2" }
+
+# Serializing support.
 rmp-serde = { version = "1.1.0" }
-anyhow = { version = "1.0.61" }
+serde = { version = "^1", features = ["derive"]}
+
+# Custom error and tracing.
+# anyhow = { version = "1.0.61" }
+color-eyre = "0.6.2"
 tracing = { version = "*" }
-tracing-subscriber = { version = "*" }
+thiserror = { version = "1.0.32" }
