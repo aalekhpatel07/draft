@@ -1,17 +1,22 @@
 use tokio::{sync::mpsc::{self, UnboundedSender}, net::TcpListener, io::AsyncReadExt};
 use draft_core::*;
-use draft_server::setup_honeycomb;
-use tracing::{instrument};
+use tracing::{instrument, Level, event, error, info};
 use std::net::SocketAddr;
 use anyhow::Result;
+use draft_server::{RPCSenderChannels, setup_logging};
+use tracing_honeycomb::{current_dist_trace_ctx, register_dist_tracing_root, TraceId};
 
 
 #[instrument]
 fn do_something(msg: &str) {
-    tracing::info!("Ran once!: {:#?}", msg);
+    register_dist_tracing_root(TraceId::new(), None).expect("Failed to register dist tracing root");
+    let (trace_id, span_id) = current_dist_trace_ctx().expect("Failed to get current dist trace context");
+    info!("trace_id: {}, span_id: {}", trace_id, span_id);
+    
+
+    info!("Logging: {:#?}", msg);
 }
 
-#[instrument]
 async fn create_tcp_server(addr: SocketAddr, rpc_filter_channel_sender: UnboundedSender<Vec<u8>>) {
     let server = TcpListener::bind(addr).await.expect("Failed to bind to address");
 
@@ -29,32 +34,36 @@ async fn create_tcp_server(addr: SocketAddr, rpc_filter_channel_sender: Unbounde
     }
 }
 
-#[instrument]
 async fn classify_rpc(
     mut rpc_filter_channel_receiver: mpsc::UnboundedReceiver<Vec<u8>>,
-    append_entries_sender: UnboundedSender<AppendEntriesRequest>,
-    request_vote_sender: UnboundedSender<VoteRequest>,
+    rpc_sender_channels: RPCSenderChannels
 ) {
     loop {
         let rpc = rpc_filter_channel_receiver.recv().await.expect("Failed to receive message");
         if let Ok(request) = rmp_serde::from_slice::<AppendEntriesRequest>(&rpc) {
-            append_entries_sender.send(request).expect("Failed to send AppendEntries");
+            rpc_sender_channels.append_entries.send(request).expect("Failed to send AppendEntries");
         } else if let Ok(request) = rmp_serde::from_slice::<VoteRequest>(&rpc) {
-            request_vote_sender.send(request).expect("Failed to send VoteRequest");
+            rpc_sender_channels.request_vote.send(request).expect("Failed to send VoteRequest");
         } else {
-            tracing::error!("Unknown RPC type");
+            error!("Unknown RPC type");
         }
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()>{
-    setup_honeycomb();
+    setup_logging();
+
 
     let (rpc_filter_channel_tx, rpc_filter_channel_rx) = mpsc::unbounded_channel();
 
     let (append_entries_tx, mut append_entries_rx) = mpsc::unbounded_channel();
     let (vote_tx, mut vote_rx) = mpsc::unbounded_channel();
+
+    let rpc_sender_channels = RPCSenderChannels {
+        request_vote: vote_tx,
+        append_entries: append_entries_tx,
+    };
 
 
     let server_addresses = vec![
@@ -65,20 +74,37 @@ async fn main() -> Result<()>{
     for server_address in server_addresses {
         tokio::spawn(create_tcp_server(server_address, rpc_filter_channel_tx.clone()));
     }
-    tokio::spawn(classify_rpc(rpc_filter_channel_rx, append_entries_tx.clone(), vote_tx.clone()));
+
+    tokio::spawn(classify_rpc(rpc_filter_channel_rx, rpc_sender_channels));
+
 
     let f1 = tokio::spawn(async move {
         while let Some(request) = append_entries_rx.recv().await {
-            tracing::info!("Received AppendEntriesRequest: {:#?}", request);
+            // tracing::info!("Received AppendEntriesRequest: {:#?}", request);
+            do_something(&format!("{:#?}", request));
         }
     });
     let f2 = tokio::spawn(async move {
         while let Some(request) = vote_rx.recv().await {
-            tracing::info!("Received VoteRequest: {:#?}", request);
+            // tracing::info!("Received VoteRequest: {:#?}", request);
+            do_something(&format!("{:#?}", request));
         }
     });
 
-    tokio::join!(f1, f2).0.unwrap();
+    tokio::select! {
+
+        _ = f1 => {
+
+        },
+        _ = f2 => {
+
+        },
+        _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+            info!("About to sleep for 10 seconds.");
+        }
+    }
+
+
     Ok(())
 
 }
