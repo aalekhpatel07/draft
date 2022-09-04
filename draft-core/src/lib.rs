@@ -1,6 +1,7 @@
 pub mod errors;
 mod node;
 mod rpc;
+pub mod utils;
 
 pub use node::*;
 pub use rpc::*;

@@ -7,6 +7,10 @@ edition = "2021"
 [profile.dev.package.backtrace]
 opt-level = 3
 
+[features]
+default = []
+test = ["dep:tokio"] # Workaround until https://github.com/rust-lang/cargo/issues/2911 is fixed.
+
 [dependencies]
 hashbrown = { version = "*", features = ["serde"]}
 async-trait = { version = "*"}
@@ -23,3 +27,4 @@ serde = { version = "^1", features = ["derive"]}
 color-eyre = "0.6.2"
 tracing = { version = "*" }
 thiserror = { version = "1.0.32" }
+tokio = { version="*", features = ["full"], optional = true }

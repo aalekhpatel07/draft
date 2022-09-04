@@ -1,7 +1,6 @@
 use std::cmp::Ordering;
 
 use crate::node::*;
-// use color_eyre::Result;
 use crate::errors::RequestVoteRPCError;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
@@ -11,20 +10,6 @@ pub struct AppendEntriesRequest {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppendEntriesResponse {}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct VoteRequest {
-    pub term: usize,
-    pub candidate_id: usize,
-    pub last_log_index: usize,
-    pub last_log_term: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct VoteResponse {
-    pub term: usize,
-    pub vote_granted: bool,
-}
 
 /// Whoever implements this trait must propagate any errors that occur during the RPC call.
 /// These methods don't mutate state.
@@ -38,6 +23,21 @@ pub trait RaftRPC {
         request: AppendEntriesRequest,
     ) -> color_eyre::Result<AppendEntriesResponse>;
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct VoteRequest {
+    pub term: usize,
+    pub candidate_id: usize,
+    pub last_log_index: usize,
+    pub last_log_term: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct VoteResponse {
+    pub term: usize,
+    pub vote_granted: bool,
+}
+
 
 impl RaftRPC for RaftNode {
     #[instrument(skip(self), target = "rpc::AppendEntries")]
@@ -65,7 +65,9 @@ impl RaftRPC for RaftNode {
         }
 
         if let Some(vote_recipient) = self.persistent_state.voted_for {
-            if vote_recipient != request.candidate_id {
+            // Check if we have already voted in the requested term.
+            // If so, reject if a different candidate requests vote.
+            if (vote_recipient != request.candidate_id) && (request.term == self.persistent_state.current_term) {
                 // We've already voted for someone else.
                 // Oops. Sorry, dear requester.
                 return Err(RequestVoteRPCError::AlreadyVoted {
@@ -89,7 +91,7 @@ impl RaftRPC for RaftNode {
                         .persistent_state
                         .log
                         .last()
-                        .expect("log should not be empty")
+                        .unwrap()
                         .0,
                 });
             }
@@ -104,7 +106,7 @@ impl RaftRPC for RaftNode {
                     .persistent_state
                     .log
                     .last()
-                    .expect("log should not be empty")
+                    .unwrap()
                     .0;
                 let request_last_log_term = request.last_log_term;
 
@@ -146,7 +148,7 @@ impl RaftRPC for RaftNode {
         }
         Ok(VoteResponse {
             vote_granted: true,
-            term: self.persistent_state.current_term,
+            term: self.persistent_state.current_term.max(request.term),
         })
     }
 }
@@ -156,32 +158,245 @@ mod tests {
     pub use super::*;
     pub use crate::*;
 
+    #[cfg(feature = "test")]
+    pub use tokio;
+
     pub mod request_vote {
         pub use super::*;
 
-        #[test]
-        fn request_vote_handler_basic() -> color_eyre::Result<()> {
-            color_eyre::install()?;
-            let mut receiver_raft = RaftNode::default();
-            receiver_raft.persistent_state.current_term = 2;
-            let request: VoteRequest = VoteRequest {
-                term: 1,
-                candidate_id: 2,
-                last_log_index: 0,
-                last_log_term: 0,
-            };
-            let res = receiver_raft.handle_request_vote(request);
-            assert!(res.is_err());
-            let err = res.unwrap_err();
-            assert_eq!(
-                err,
-                RequestVoteRPCError::NodeOutOfDate {
-                    self_id: 0,
-                    handler_term: 2,
-                    requested_term: 1
-                }
-            );
-            Ok(())
+        pub fn vote_request(term: usize, candidate_id: usize, last_log_index: usize, last_log_term: usize) -> VoteRequest {
+            VoteRequest { term, candidate_id, last_log_index, last_log_term }
         }
+        pub fn persistent_state<T>(current_term: usize, voted_for: Option<usize>, log: Vec<(usize, T)>) -> PersistentState<T>{
+            PersistentState { log, current_term, voted_for }
+        }
+
+        macro_rules! request_vote_test {
+            (
+                $(#[$meta:meta])*
+                $func_name:ident,
+                $initial_persistent_state:expr,
+                $request:expr,
+                $response:pat
+            ) => {
+                $(#[$meta])*
+                #[cfg(feature = "test")]
+                #[tokio::test]
+                pub async fn $func_name() {
+                    utils::set_up_logging();
+                    let mut receiver_raft = RaftNode::default();
+                    receiver_raft.persistent_state = $initial_persistent_state;
+                    let request: VoteRequest = $request;
+                    let observed_response = receiver_raft.handle_request_vote(request);
+                    assert!(matches!(observed_response, $response));
+                }
+            };
+        }
+
+        request_vote_test!(
+            /// Test that a receiver node grants the vote to any vote request initially.
+            initial,
+            PersistentState { current_term: 0, voted_for: None, log: vec![] },
+            vote_request(0, 0, 0, 0),
+            Ok(VoteResponse { term: 0, vote_granted: true })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node grants 
+            /// the vote to a vote request when the receiver
+            /// hasn't voted for anybody yet.
+            grant_vote_if_not_voted_yet_and_log_at_least_up_to_date,
+            PersistentState { current_term: 0, voted_for: None, log: vec![] },
+            vote_request(1, 0, 0, 0),
+            Ok(VoteResponse { term: 1, vote_granted: true })
+        );
+
+
+        request_vote_test!(
+            /// Test that a receiver node rejects
+            /// a vote request if the candidate
+            /// is in a stale election term.
+            reject_vote_if_candidate_in_stale_election_term,
+            persistent_state(2, None, vec![]),
+            vote_request(1, 1, 0, 0),
+            Err(RequestVoteRPCError::NodeOutOfDate { self_id: 0, handler_term: 2, requested_term: 1 })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node approves 
+            /// a vote request to the candidate
+            /// if the receiver has already voted for that term
+            /// but the vote was for the same candidate.
+            grant_vote_if_already_voted_for_same_candidate,
+            persistent_state(2, Some(1), vec![]),
+            vote_request(2, 1, 0, 0),
+            Ok(VoteResponse { term: 2, vote_granted: true })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node denies
+            /// a vote request to the candidate
+            /// if the receiver has already voted for that term
+            /// but the vote was for the other candidate.
+            reject_vote_if_already_voted_for_other_candidate,
+            persistent_state(0, Some(3), vec![]),
+            vote_request(0, 1, 0, 0),
+            Err(RequestVoteRPCError::AlreadyVoted { self_id: 0, voted_for: 3, requested_node_id: 1 })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node grants
+            /// a vote request to the candidate
+            /// if the receiver has already voted for the candidate
+            /// but in a previous term.
+            grant_vote_if_already_voted_for_same_candidate_but_in_a_previous_term,
+            persistent_state(0, Some(1), vec![]),
+            vote_request(2, 1, 0, 0),
+            Ok(VoteResponse { term: 2, vote_granted: true })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node grants
+            /// a vote request of the candidate
+            /// if the receiver has already voted for some other node
+            /// but in a previous term.
+            grant_vote_if_already_voted_for_other_candidate_but_in_a_previous_term,
+            persistent_state(0, Some(3), vec![]),
+            vote_request(2, 1, 0, 0),
+            Ok(VoteResponse { term: 2, vote_granted: true })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node rejects
+            /// a vote request of the candidate
+            /// if the receiver has not already voted
+            /// and has a fresher log than the candidate.
+            reject_vote_if_not_already_voted_but_candidate_log_is_stale,
+            persistent_state(2, None, vec![(1, "a".to_string())]),
+            vote_request(2, 1, 0, 0),
+            Err(RequestVoteRPCError::CandidateNodeHasEmptyLog { 
+                self_id: 0, 
+                requested_node_id: 1, 
+                requested_num_log_entries: 0, 
+                last_log_entry_term: 1
+            })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node grants
+            /// a vote request to the candidate
+            /// if the receiver has not already voted
+            /// and has candidate has the same log as receiver's.
+            grant_vote_if_not_already_voted_and_candidate_log_is_same_as_receiver_log,
+            persistent_state(2, None, vec![(1, "a".to_string())]),
+            vote_request(2, 1, 1, 1),
+            Ok(VoteResponse { term: 2, vote_granted: true })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node rejects
+            /// a vote request of the candidate
+            /// if the receiver has not already voted
+            /// and has the candidate's last log term 
+            /// is earlier than the receiver's last entry's.
+            reject_vote_if_not_already_voted_and_candidate_last_log_term_is_earlier_than_receiver_log_last_entry_term,
+            persistent_state(2, None, vec![(2, "".to_string())]),
+            vote_request(2, 1, 1, 1),
+            Err(RequestVoteRPCError::CandidateNodeHasStaleLog { 
+                self_id: 0, 
+                requested_node_id: 1, 
+                requested_last_log_entry_term: 1, 
+                self_last_log_entry_term: 2, 
+                requested_num_log_entries: 1, 
+                self_num_log_entries: 1
+            })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node rejects
+            /// a vote request of the candidate
+            /// if the receiver has not already voted
+            /// and has the candidate has less entries
+            /// than the recipient node.
+            reject_vote_if_not_already_voted_and_candidate_has_less_entries_than_receiver,
+            persistent_state(2, None, vec![(2, "".to_string()), (2, "".to_string())]),
+            vote_request(2, 1, 1, 2),
+            Err(RequestVoteRPCError::CandidateNodeHasStaleLog {
+                self_id: 0, 
+                requested_node_id: 1, 
+                requested_last_log_entry_term: 2, 
+                self_last_log_entry_term: 2, 
+                requested_num_log_entries: 1, 
+                self_num_log_entries: 2
+            })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node grants
+            /// a vote request to the candidate
+            /// if the receiver has not already voted
+            /// and has the candidate has more entries than receiver.
+            grant_vote_if_not_already_voted_and_candidate_has_more_entries_than_receiver,
+            persistent_state(1, Some(2), vec![(2, "".to_string()), (2, "".to_string())]),
+            vote_request(2, 1, 4, 3),
+            Ok(VoteResponse { term: 2, vote_granted: true })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node rejects
+            /// a vote request of the candidate
+            /// despite itself having a stale log,
+            /// because it was able to determine that
+            /// the candidate has even more stale log.
+            reject_vote_if_already_voted_in_some_previous_term_but_candidate_has_more_stale_log_than_receiver,
+            persistent_state(2, Some(4), vec![(2, "".to_string()), (2, "".to_string())]),
+            vote_request(6, 1, 2, 1),
+            Err(RequestVoteRPCError::CandidateNodeHasStaleLog {
+                self_id: 0, 
+                requested_node_id: 1, 
+                requested_last_log_entry_term: 1, 
+                self_last_log_entry_term: 2, 
+                requested_num_log_entries: 2, 
+                self_num_log_entries: 2
+            })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node rejects
+            /// a vote request of the candidate
+            /// if it has already voted for it in the same
+            /// term but the candidate has more stale logs than the
+            /// receiver.
+            reject_vote_if_already_voted_for_the_same_candidate_in_this_term_but_candidate_has_more_stale_log_than_receiver,
+            persistent_state(2, Some(1), vec![(2, "".to_string()), (2, "".to_string())]),
+            vote_request(2, 1, 2, 1),
+            Err(RequestVoteRPCError::CandidateNodeHasStaleLog {
+                self_id: 0, 
+                requested_node_id: 1, 
+                requested_last_log_entry_term: 1, 
+                self_last_log_entry_term: 2, 
+                requested_num_log_entries: 2, 
+                self_num_log_entries: 2
+            })
+        );
+
+        request_vote_test!(
+            /// Test that a receiver node rejects
+            /// a vote request of the candidate
+            /// if it already voted for it in some previous term
+            /// and the candidate has stale logs compared to the receiver.
+            reject_vote_if_already_voted_for_the_same_candidate_in_some_previous_term_and_candidate_has_stale_log,
+            persistent_state(1, Some(1), vec![(2, "".to_string()), (2, "".to_string())]),
+            vote_request(2, 1, 2, 1),
+            Err(RequestVoteRPCError::CandidateNodeHasStaleLog { 
+                self_id: 0, 
+                requested_node_id: 1, 
+                requested_last_log_entry_term: 1, 
+                self_last_log_entry_term: 2, 
+                requested_num_log_entries: 2, 
+                self_num_log_entries: 2
+            })
+        );
+
     }
 }
