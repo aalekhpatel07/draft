@@ -1,4 +1,3 @@
-pub mod errors;
 mod node;
 mod rpc;
 pub mod utils;
