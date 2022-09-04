@@ -57,7 +57,7 @@ impl RaftRPC for RaftNode {
         if request.term < self.persistent_state.current_term {
             // The candidate is straight up out-of-date.
             // Inform it of the latest term that we know of.
-            let _ = return Err(RequestVoteRPCError::NodeOutOfDate {
+            return Err(RequestVoteRPCError::NodeOutOfDate {
                 self_id: self.metadata.id,
                 handler_term: self.persistent_state.current_term,
                 requested_term: request.term,
@@ -164,10 +164,12 @@ mod tests {
     pub mod request_vote {
         pub use super::*;
 
-        pub fn vote_request(term: usize, candidate_id: usize, last_log_index: usize, last_log_term: usize) -> VoteRequest {
+        #[allow(dead_code)]
+        fn vote_request(term: usize, candidate_id: usize, last_log_index: usize, last_log_term: usize) -> VoteRequest {
             VoteRequest { term, candidate_id, last_log_index, last_log_term }
         }
-        pub fn persistent_state<T>(current_term: usize, voted_for: Option<usize>, log: Vec<(usize, T)>) -> PersistentState<T>{
+        #[allow(dead_code)]
+        fn persistent_state<T>(current_term: usize, voted_for: Option<usize>, log: Vec<(usize, T)>) -> PersistentState<T>{
             PersistentState { log, current_term, voted_for }
         }
 
