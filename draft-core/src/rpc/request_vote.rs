@@ -1,28 +1,8 @@
+use crate::RaftNode;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use std::cmp::Ordering;
 
-use crate::node::*;
-use crate::errors::RequestVoteRPCError;
-use serde::{Deserialize, Serialize};
-use tracing::instrument;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppendEntriesRequest {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppendEntriesResponse {}
-
-/// Whoever implements this trait must propagate any errors that occur during the RPC call.
-/// These methods don't mutate state.
-pub trait RaftRPC {
-    fn handle_request_vote(
-        &self,
-        request: VoteRequest,
-    ) -> Result<VoteResponse, RequestVoteRPCError>;
-    fn handle_append_entries(
-        &self,
-        request: AppendEntriesRequest,
-    ) -> color_eyre::Result<AppendEntriesResponse>;
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct VoteRequest {
@@ -39,118 +19,151 @@ pub struct VoteResponse {
 }
 
 
-impl RaftRPC for RaftNode {
-    #[instrument(skip(self), target = "rpc::AppendEntries")]
-    fn handle_append_entries(
-        &self,
-        request: AppendEntriesRequest,
-    ) -> color_eyre::Result<AppendEntriesResponse> {
-        unimplemented!()
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum RequestVoteRPCError {
+    #[error("The receiver node ({self_id}) is in term ({handler_term}) which is higher than the candidate node's term ({requested_term})")]
+    NodeOutOfDate {
+        self_id: usize,
+        handler_term: usize,
+        requested_term: usize,
+    },
+    #[error("The reciver node ({self_id}) has already voted for ({voted_for}) in this election term which is different from the candidate ({requested_node_id}).")]
+    AlreadyVoted {
+        self_id: usize,
+        voted_for: usize,
+        requested_node_id: usize,
+    },
+    #[error(
+        "The candidate node's ({requested_node_id}) log is not as fresh as the receiving node ({self_id})'s log.\n
+         The candidate node's last log entry has term ({requested_last_log_entry_term}) and the receiving node's last log entry is ({self_last_log_entry_term:?}).\n
+         The candidate node's has ({requested_num_log_entries}) log entries and the receiving node has ({self_num_log_entries}) log entries.
+        "
+    )]
+    CandidateNodeHasStaleLog {
+        self_id: usize,
+        requested_node_id: usize,
+        requested_last_log_entry_term: usize,
+        self_last_log_entry_term: usize,
+        requested_num_log_entries: usize,
+        self_num_log_entries: usize,
+    },
+    #[error(
+        "The candidate node ({requested_node_id}) has a staler log than the receiving node ({self_id}).\n
+         The candidate node's log is empty but the receiving node's log is not.\n
+         The receiving node's log has ({requested_num_log_entries}) entries and the last entry has term ({last_log_entry_term}).
+        "
+    )]
+    CandidateNodeHasEmptyLog {
+        self_id: usize,
+        requested_node_id: usize,
+        requested_num_log_entries: usize,
+        last_log_entry_term: usize,
+    },
+}
+
+
+/// Given a vote request RPC, process the request without making any modifications to the state
+/// as described in Section 5.4.1 and Figure 3.
+pub fn handle_request_vote(
+    receiver_node: &RaftNode,
+    request: VoteRequest,
+) -> Result<VoteResponse, RequestVoteRPCError> {
+    if request.term < receiver_node.persistent_state.current_term {
+        // The candidate is straight up out-of-date.
+        // Inform it of the latest term that we know of.
+        return Err(RequestVoteRPCError::NodeOutOfDate {
+            self_id: receiver_node.metadata.id,
+            handler_term: receiver_node.persistent_state.current_term,
+            requested_term: request.term,
+        });
     }
-    /// Given a vote request RPC, process the request without making any modifications to the state
-    /// as described in Section 5.4.1 and Figure 3.
-    #[instrument(skip(self), target = "rpc::RequestVote")]
-    fn handle_request_vote(
-        &self,
-        request: VoteRequest,
-    ) -> Result<VoteResponse, RequestVoteRPCError> {
-        if request.term < self.persistent_state.current_term {
-            // The candidate is straight up out-of-date.
-            // Inform it of the latest term that we know of.
-            return Err(RequestVoteRPCError::NodeOutOfDate {
-                self_id: self.metadata.id,
-                handler_term: self.persistent_state.current_term,
-                requested_term: request.term,
+
+    if let Some(vote_recipient) = receiver_node.persistent_state.voted_for {
+        // Check if we have already voted in the requested term.
+        // If so, reject if a different candidate requests vote.
+        if (vote_recipient != request.candidate_id) && (request.term == receiver_node.persistent_state.current_term) {
+            // We've already voted for someone else.
+            // Oops. Sorry, dear requester.
+            return Err(RequestVoteRPCError::AlreadyVoted {
+                self_id: receiver_node.metadata.id,
+                voted_for: vote_recipient,
+                requested_node_id: request.candidate_id,
             });
         }
+    }
 
-        if let Some(vote_recipient) = self.persistent_state.voted_for {
-            // Check if we have already voted in the requested term.
-            // If so, reject if a different candidate requests vote.
-            if (vote_recipient != request.candidate_id) && (request.term == self.persistent_state.current_term) {
-                // We've already voted for someone else.
-                // Oops. Sorry, dear requester.
-                return Err(RequestVoteRPCError::AlreadyVoted {
-                    self_id: self.metadata.id,
-                    voted_for: vote_recipient,
-                    requested_node_id: request.candidate_id,
-                });
-            }
-        }
-
-        let self_log_len = self.persistent_state.log.len();
-        match (self_log_len, request.last_log_index) {
-            (1.., 0) => {
-                // We have some entries but candidate comes bearing no entries.
-                // Thus the candidate has a stale log and we must inform it.
-                return Err(RequestVoteRPCError::CandidateNodeHasEmptyLog {
-                    self_id: self.metadata.id,
-                    requested_node_id: request.candidate_id,
-                    requested_num_log_entries: request.last_log_index,
-                    last_log_entry_term: self
-                        .persistent_state
-                        .log
-                        .last()
-                        .unwrap()
-                        .0,
-                });
-            }
-            (1.., 1..) => {
-                // We have entries as well as the candidate has some entries.
-                // Determine which log is fresher by comparing the terms of the last entries.
-                // If the terms are the same, the longer log is the fresher log.
-                // Otherwise, the log with the higher last term is the fresher log.
-
-                // Let's match the terms of the last entries.
-                let self_last_log_entry_term = self
+    let self_log_len = receiver_node.persistent_state.log.len();
+    match (self_log_len, request.last_log_index) {
+        (1.., 0) => {
+            // We have some entries but candidate comes bearing no entries.
+            // Thus the candidate has a stale log and we must inform it.
+            return Err(RequestVoteRPCError::CandidateNodeHasEmptyLog {
+                self_id: receiver_node.metadata.id,
+                requested_node_id: request.candidate_id,
+                requested_num_log_entries: request.last_log_index,
+                last_log_entry_term: receiver_node
                     .persistent_state
                     .log
                     .last()
                     .unwrap()
-                    .0;
-                let request_last_log_term = request.last_log_term;
+                    .0,
+            });
+        }
+        (1.., 1..) => {
+            // We have entries as well as the candidate has some entries.
+            // Determine which log is fresher by comparing the terms of the last entries.
+            // If the terms are the same, the longer log is the fresher log.
+            // Otherwise, the log with the higher last term is the fresher log.
 
-                match self_last_log_entry_term.cmp(&request_last_log_term) {
-                    Ordering::Equal => {
-                        // The terms of the last entries are the same. In this case,
-                        // the longer log is more fresh. (Section 5.4.1)
-                        let candidate_log_size = request.last_log_index;
-                        if self_log_len > candidate_log_size {
-                            return Err(RequestVoteRPCError::CandidateNodeHasStaleLog {
-                                self_id: self.metadata.id,
-                                requested_node_id: request.candidate_id,
-                                requested_last_log_entry_term: request.last_log_term,
-                                self_last_log_entry_term,
-                                requested_num_log_entries: request.last_log_index,
-                                self_num_log_entries: self_log_len,
-                            });
-                        }
-                    }
-                    Ordering::Greater => {
-                        // We have a higher term (for the last log entry) than the candidate's.
-                        // Thus our log is more fresh. Notify the candidate. (Section 5.4.1)
+            // Let's match the terms of the last entries.
+            let self_last_log_entry_term = receiver_node
+                .persistent_state
+                .log
+                .last()
+                .unwrap()
+                .0;
+            let request_last_log_term = request.last_log_term;
+
+            match self_last_log_entry_term.cmp(&request_last_log_term) {
+                Ordering::Equal => {
+                    // The terms of the last entries are the same. In this case,
+                    // the longer log is more fresh. (Section 5.4.1)
+                    let candidate_log_size = request.last_log_index;
+                    if self_log_len > candidate_log_size {
                         return Err(RequestVoteRPCError::CandidateNodeHasStaleLog {
-                            self_id: self.metadata.id,
+                            self_id: receiver_node.metadata.id,
                             requested_node_id: request.candidate_id,
                             requested_last_log_entry_term: request.last_log_term,
                             self_last_log_entry_term,
                             requested_num_log_entries: request.last_log_index,
-                            self_num_log_entries: self.persistent_state.log.len(),
+                            self_num_log_entries: self_log_len,
                         });
                     }
-                    Ordering::Less => {
-                        // The candidate has a higher term. So the candidate has a fresher log.
-                    }
-                };
-            }
-            // In any other case, there can't ever be a rejection.
-            _ => {}
+                }
+                Ordering::Greater => {
+                    // We have a higher term (for the last log entry) than the candidate's.
+                    // Thus our log is more fresh. Notify the candidate. (Section 5.4.1)
+                    return Err(RequestVoteRPCError::CandidateNodeHasStaleLog {
+                        self_id: receiver_node.metadata.id,
+                        requested_node_id: request.candidate_id,
+                        requested_last_log_entry_term: request.last_log_term,
+                        self_last_log_entry_term,
+                        requested_num_log_entries: request.last_log_index,
+                        self_num_log_entries: receiver_node.persistent_state.log.len(),
+                    });
+                }
+                Ordering::Less => {
+                    // The candidate has a higher term. So the candidate has a fresher log.
+                }
+            };
         }
-        Ok(VoteResponse {
-            vote_granted: true,
-            term: self.persistent_state.current_term.max(request.term),
-        })
+        // In any other case, there can't ever be a rejection.
+        _ => {}
     }
+    Ok(VoteResponse {
+        vote_granted: true,
+        term: receiver_node.persistent_state.current_term.max(request.term),
+    })
 }
 
 #[cfg(test)]
