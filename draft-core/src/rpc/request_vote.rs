@@ -21,22 +21,33 @@ pub struct VoteResponse {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum RequestVoteRPCError {
-    #[error("The receiver node ({self_id}) is in term ({handler_term}) which is higher than the candidate node's term ({requested_term})")]
+    #[error(
+        "The receiver node ({self_id}) is in term ({handler_term}) which is higher than the candidate node's term ({requested_term})
+         The latest term is ({latest_term}).
+        "
+    )]
     NodeOutOfDate {
         self_id: usize,
         handler_term: usize,
         requested_term: usize,
+        latest_term: usize,
     },
-    #[error("The reciver node ({self_id}) has already voted for ({voted_for}) in this election term which is different from the candidate ({requested_node_id}).")]
+    #[error(
+        "The reciver node ({self_id}) has already voted for ({voted_for}) in this election term which is different from the candidate ({requested_node_id}). \n 
+         The latest term is ({latest_term}).
+        "
+    )]
     AlreadyVoted {
         self_id: usize,
         voted_for: usize,
         requested_node_id: usize,
+        latest_term: usize,
     },
     #[error(
         "The candidate node's ({requested_node_id}) log is not as fresh as the receiving node ({self_id})'s log.\n
          The candidate node's last log entry has term ({requested_last_log_entry_term}) and the receiving node's last log entry is ({self_last_log_entry_term:?}).\n
          The candidate node's has ({requested_num_log_entries}) log entries and the receiving node has ({self_num_log_entries}) log entries.
+         The latest term is ({latest_term}).
         "
     )]
     CandidateNodeHasStaleLog {
@@ -46,11 +57,13 @@ pub enum RequestVoteRPCError {
         self_last_log_entry_term: usize,
         requested_num_log_entries: usize,
         self_num_log_entries: usize,
+        latest_term: usize,
     },
     #[error(
         "The candidate node ({requested_node_id}) has a staler log than the receiving node ({self_id}).\n
          The candidate node's log is empty but the receiving node's log is not.\n
          The receiving node's log has ({requested_num_log_entries}) entries and the last entry has term ({last_log_entry_term}).
+         The latest term is ({latest_term}).
         "
     )]
     CandidateNodeHasEmptyLog {
@@ -58,6 +71,7 @@ pub enum RequestVoteRPCError {
         requested_node_id: usize,
         requested_num_log_entries: usize,
         last_log_entry_term: usize,
+        latest_term: usize,
     },
 }
 
@@ -75,6 +89,7 @@ pub fn handle_request_vote(
             self_id: receiver_node.metadata.id,
             handler_term: receiver_node.persistent_state.current_term,
             requested_term: request.term,
+            latest_term: receiver_node.persistent_state.current_term
         });
     }
 
@@ -88,6 +103,7 @@ pub fn handle_request_vote(
                 self_id: receiver_node.metadata.id,
                 voted_for: vote_recipient,
                 requested_node_id: request.candidate_id,
+                latest_term: request.term
             });
         }
     }
@@ -107,6 +123,7 @@ pub fn handle_request_vote(
                     .last()
                     .unwrap()
                     .0,
+                latest_term: request.term
             });
         }
         (1.., 1..) => {
@@ -137,6 +154,7 @@ pub fn handle_request_vote(
                             self_last_log_entry_term,
                             requested_num_log_entries: request.last_log_index,
                             self_num_log_entries: self_log_len,
+                            latest_term: request.term
                         });
                     }
                 }
@@ -150,6 +168,7 @@ pub fn handle_request_vote(
                         self_last_log_entry_term,
                         requested_num_log_entries: request.last_log_index,
                         self_num_log_entries: receiver_node.persistent_state.log.len(),
+                        latest_term: request.term
                     });
                 }
                 Ordering::Less => {
@@ -162,7 +181,7 @@ pub fn handle_request_vote(
     }
     Ok(VoteResponse {
         vote_granted: true,
-        term: receiver_node.persistent_state.current_term.max(request.term),
+        term: request.term,
     })
 }
 
@@ -202,7 +221,7 @@ mod tests {
                     let mut receiver_raft = RaftNode::default();
                     receiver_raft.persistent_state = $initial_persistent_state;
                     let request: VoteRequest = $request;
-                    let observed_response = receiver_raft.handle_request_vote(request);
+                    let observed_response = receiver_raft.try_handle_request_vote(request);
                     assert!(matches!(observed_response, $response));
                 }
             };
@@ -234,7 +253,7 @@ mod tests {
             reject_vote_if_candidate_in_stale_election_term,
             persistent_state(2, None, vec![]),
             vote_request(1, 1, 0, 0),
-            Err(RequestVoteRPCError::NodeOutOfDate { self_id: 0, handler_term: 2, requested_term: 1 })
+            Err(RequestVoteRPCError::NodeOutOfDate { self_id: 0, handler_term: 2, requested_term: 1, latest_term: 2 })
         );
 
         request_vote_test!(
@@ -256,7 +275,7 @@ mod tests {
             reject_vote_if_already_voted_for_other_candidate,
             persistent_state(0, Some(3), vec![]),
             vote_request(0, 1, 0, 0),
-            Err(RequestVoteRPCError::AlreadyVoted { self_id: 0, voted_for: 3, requested_node_id: 1 })
+            Err(RequestVoteRPCError::AlreadyVoted { self_id: 0, voted_for: 3, requested_node_id: 1, latest_term: 0 })
         );
 
         request_vote_test!(
@@ -293,7 +312,8 @@ mod tests {
                 self_id: 0, 
                 requested_node_id: 1, 
                 requested_num_log_entries: 0, 
-                last_log_entry_term: 1
+                last_log_entry_term: 1,
+                latest_term: 2
             })
         );
 
@@ -323,7 +343,8 @@ mod tests {
                 requested_last_log_entry_term: 1, 
                 self_last_log_entry_term: 2, 
                 requested_num_log_entries: 1, 
-                self_num_log_entries: 1
+                self_num_log_entries: 1,
+                latest_term: 2
             })
         );
 
@@ -342,7 +363,8 @@ mod tests {
                 requested_last_log_entry_term: 2, 
                 self_last_log_entry_term: 2, 
                 requested_num_log_entries: 1, 
-                self_num_log_entries: 2
+                self_num_log_entries: 2,
+                latest_term: 2
             })
         );
 
@@ -372,7 +394,8 @@ mod tests {
                 requested_last_log_entry_term: 1, 
                 self_last_log_entry_term: 2, 
                 requested_num_log_entries: 2, 
-                self_num_log_entries: 2
+                self_num_log_entries: 2,
+                latest_term: 6
             })
         );
 
@@ -391,7 +414,8 @@ mod tests {
                 requested_last_log_entry_term: 1, 
                 self_last_log_entry_term: 2, 
                 requested_num_log_entries: 2, 
-                self_num_log_entries: 2
+                self_num_log_entries: 2,
+                latest_term: 2
             })
         );
 
@@ -409,7 +433,8 @@ mod tests {
                 requested_last_log_entry_term: 1, 
                 self_last_log_entry_term: 2, 
                 requested_num_log_entries: 2, 
-                self_num_log_entries: 2
+                self_num_log_entries: 2,
+                latest_term: 2
             })
         );
 
