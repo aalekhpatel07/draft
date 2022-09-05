@@ -4,7 +4,7 @@ mod append_entries;
 pub use request_vote::*;
 pub use append_entries::*;
 
-use tracing::instrument;
+use tracing::{instrument, error};
 use crate::node::RaftNode;
 
 
@@ -40,7 +40,16 @@ impl TryRaftRPC for RaftNode {
         &mut self,
         request: AppendEntriesRequest,
     ) -> Result<AppendEntriesResponse, AppendEntriesRPCError> {
-        handle_append_entries(self, request)
+        let res = handle_append_entries(self, request);
+        match res {
+            Ok(result) => {
+                if let Err(e) = self.save_to_disk() {
+                    error!("{}", e.to_string());
+                }
+                Ok(result)
+            },
+            Err(err) => Err(err)
+        }
     }
     /// Given a vote request RPC, process the request without making any modifications to the state
     /// as described in Section 5.4.1 and Figure 3.
@@ -56,9 +65,24 @@ impl TryRaftRPC for RaftNode {
 impl RaftRPC for RaftNode {
     fn handle_append_entries(
         &mut self,
-        _request: AppendEntriesRequest,
+        request: AppendEntriesRequest,
     ) -> color_eyre::Result<AppendEntriesResponse> {
-        todo!("Implement AppendEntries handler.")
+        let requested_term = request.term;
+        match handle_append_entries(self, request) {
+            Ok(response) => {
+                Ok(response)
+            },
+            Err(err) => {
+                match err {
+                    AppendEntriesRPCError::NodeOutOfDate { latest_term, .. } => {
+                        Ok(AppendEntriesResponse { term: latest_term, success: false })
+                    },
+                    _ => {
+                        Ok(AppendEntriesResponse { term: requested_term, success: false })
+                    }
+                }
+            }
+        }
     }
 
     fn handle_request_vote(
@@ -68,7 +92,7 @@ impl RaftRPC for RaftNode {
         
         let candidate_id = request.candidate_id;
 
-        match handle_request_vote(&self, request) {
+        match handle_request_vote(self, request) {
             Ok(response) => {
                 // The rpc was handled correctly as expected.
                 // We must grant vote now.
