@@ -40,7 +40,7 @@ impl TryRaftRPC for RaftNode {
         &mut self,
         request: AppendEntriesRequest,
     ) -> Result<AppendEntriesResponse, AppendEntriesRPCError> {
-        unimplemented!()
+        handle_append_entries(self, request)
     }
     /// Given a vote request RPC, process the request without making any modifications to the state
     /// as described in Section 5.4.1 and Figure 3.
@@ -49,8 +49,6 @@ impl TryRaftRPC for RaftNode {
         &mut self,
         request: VoteRequest,
     ) -> Result<VoteResponse, RequestVoteRPCError> {
-
-
         handle_request_vote(&self, request)
     }
 }
