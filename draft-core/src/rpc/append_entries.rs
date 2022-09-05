@@ -297,7 +297,7 @@ pub fn handle_append_entries(
         .position(|(index, pair)| {
             match pair {
                 // The position iterator short-circuits either at the first non-matching term pair,
-                // or when we have exhausted all stored entries.
+                // or when we have exhausted either stored entries or requested_entries.
                 EitherOrBoth::Both(requested_entry, stored_entry) => {
                     if requested_entry != stored_entry {
                         // Found a conflicting index. Mark it so that we can continue adding requested entries from
@@ -309,7 +309,8 @@ pub fn handle_append_entries(
                         false
                     }
                 },
-                // This may only get evaluated once, when the stored entries are exhausted.
+                // This may only get evaluated when the stored entries are exhausted
+                // but the requested entries are not.
                 // If we reach here, it must mean there were no conflicting pairs.
                 EitherOrBoth::Left(_) => {
                     // Our stored log is a prefix of the requested entries.
@@ -320,6 +321,9 @@ pub fn handle_append_entries(
                     }
                     false
                 },
+                // This may only get evaluated when the requested entries are exhausted
+                // but stored entries are not.
+                // If we reach here, it must mean there were no conflicting pairs.
                 EitherOrBoth::Right(_) => {
                     // The requested entries are already a sub-array of our stored log.
                     // If our stored log as more entries (i.e. a suffix that doesn't exist in the requested entries),
