@@ -1,18 +1,24 @@
-use std::cmp::Ordering;
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use bytes::Bytes;
-use crate::RaftNode;
+use crate::{Log, RaftNode, Term};
+use derivative::Derivative;
+use tracing::trace;
+use itertools::{
+    Itertools,
+    EitherOrBoth
+};
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+
+#[derive(Debug, Clone, Serialize, Deserialize, Derivative)]
+#[derivative(Default)]
 pub struct AppendEntriesRequest {
     pub term: usize,
     pub leader_id: usize,
     pub previous_log_index: usize,
     pub previous_log_term: usize,
-    pub entries: Vec<Bytes>,
+    #[derivative(Default(value="vec![]"))]
+    pub entries: Vec<Log>,
     pub leader_commit_index: usize
 }
 
@@ -27,7 +33,7 @@ pub struct AppendEntriesResponse {
 pub enum AppendEntriesRPCError {
     #[error(
         "The receiver node ({self_id}) is in term ({handler_term}) which is higher than the candidate node's term ({requested_term})
-         The latest term is ({latest_term}).
+         The latest term is ({latest_term}). The leader requested with ({requested_entries_len}) entries.
         "
     )]
     NodeOutOfDate {
@@ -35,6 +41,7 @@ pub enum AppendEntriesRPCError {
         handler_term: usize,
         requested_term: usize,
         latest_term: usize,
+        requested_entries_len: usize
     },
     #[error(
         "The recipient node's ({self_id}) log does not contain a tail entry 
@@ -42,7 +49,7 @@ pub enum AppendEntriesRPCError {
         The recipient and the leader have inconsistent logs (at least) to the right of ({requested_previous_log_index}).\n
         The leader claims its tail entry is (term: {requested_previous_log_term}, index: {requested_previous_log_index}) but 
         the the recipient's tail entry is (term: {self_previous_log_term}, index: {self_previous_log_index}).\n
-        The latest term is ({latest_term}).
+        The latest term is ({latest_term}). The leader requested with ({requested_entries_len}) entries.
         "
     )]
     RecipientHasNoMatchingLogEntry {
@@ -53,11 +60,13 @@ pub enum AppendEntriesRPCError {
         self_previous_log_index: usize,
         self_previous_log_term: usize,
         latest_term: usize,
+        requested_entries_len: usize,
     },
 
     #[error(
         "The recipient node's ({self_id}) log contains some ({self_log_len}) entries but the leader ({requested_node_id}) requested without a tail to look for.
          The latest term is ({latest_term}). The leader's commit_index is ({commit_index}).
+         The leader requested with ({requested_entries_len}) entries.
         "
     )]
     LeaderHasRewindedExcessively {
@@ -67,107 +76,112 @@ pub enum AppendEntriesRPCError {
         requested_previous_log_term: usize,
         self_log_len: usize,
         latest_term: usize,
-        commit_index: usize
+        commit_index: usize,
+        requested_entries_len: usize
     }
 }
 
-pub fn handle_heartbeat(
-    receiver_node: &RaftNode,
-    request: AppendEntriesRequest
-) -> Result<AppendEntriesResponse, AppendEntriesRPCError>
-{
-    if receiver_node.persistent_state.log.is_empty() {
-        // We have an empty log.
+// pub fn handle_heartbeat(
+//     receiver_node: &RaftNode,
+//     request: AppendEntriesRequest
+// ) -> Result<AppendEntriesResponse, AppendEntriesRPCError>
+// {
+//     if receiver_node.persistent_state.log.is_empty() {
+//         // We have an empty log.
 
-        if request.previous_log_index == 0 {
-            // So does the leader.
-            return Ok(AppendEntriesResponse { term: request.term, success: true })
-        }
+//         if request.previous_log_index == 0 {
+//             // So does the leader.
+//             return Ok(AppendEntriesResponse { term: request.term, success: true })
+//         }
 
-        // Leader has some entries in the log 
-        // but no new entries for us to commit.
+//         // Leader has some entries in the log 
+//         // but no new entries for us to commit.
 
-        // This may happen if we were in the minority
-        // of nodes that failed to replicate some of the logs
-        // at some point in the past. Now, the leader claims
-        // it has some entries but we don't have anything in our local log.
-        // This is a log inconsistency and we let the leader know
-        // of it. The leader will retry later. (Section 5.3)
+//         // This may happen if we were in the minority
+//         // of nodes that failed to replicate some of the logs
+//         // at some point in the past. Now, the leader claims
+//         // it has some entries but we don't have anything in our local log.
+//         // This is a log inconsistency and we let the leader know
+//         // of it. The leader will retry later. (Section 5.3)
         
-        // Eventually, the leader will realize we need the full log,
-        // in which case, we'll get some new entries to append and
-        // we'll live happily ever after. (umm, probably?)
+//         // Eventually, the leader will realize we need the full log,
+//         // in which case, we'll get some new entries to append and
+//         // we'll live happily ever after. (umm, probably?)
 
-        return Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry {
-            self_id: receiver_node.metadata.id, 
-            requested_node_id: request.leader_id, 
-            requested_previous_log_index: request.previous_log_index, 
-            requested_previous_log_term: request.previous_log_term, 
-            self_previous_log_index: 0, // because our log is empty in this case. 
-            self_previous_log_term: 0, // this is irrelevant if our log is empty.
-            latest_term: request.term
-        })
-    }
+//         return Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry {
+//             self_id: receiver_node.metadata.id, 
+//             requested_node_id: request.leader_id, 
+//             requested_previous_log_index: request.previous_log_index, 
+//             requested_previous_log_term: request.previous_log_term, 
+//             self_previous_log_index: 0, // because our log is empty in this case. 
+//             self_previous_log_term: 0, // this is irrelevant if our log is empty.
+//             latest_term: request.term,
+//             requested_entries_len: request.entries.len()
+//         })
+//     }
 
-    // We have some entries in our log. Must check what exists at that index.
+//     // We have some entries in our log. Must check what exists at that index.
 
-    if request.previous_log_index == 0 {
-        // Leader has been lagging behind. 
-        // Claims to have no tail to append to.
+//     if request.previous_log_index == 0 {
+//         // Leader has been lagging behind. 
+//         // Claims to have no tail to append to.
         
-        // Likely an inconsistent state. 
-        // Leader has rewinded more than necessary.
-        return Err(AppendEntriesRPCError::LeaderHasRewindedExcessively { 
-            self_id: receiver_node.metadata.id, 
-            requested_node_id: request.leader_id, 
-            requested_previous_log_index: 0, 
-            requested_previous_log_term: 0, 
-            self_log_len: receiver_node.persistent_state.log.len(), 
-            latest_term: request.term, 
-            commit_index: request.leader_commit_index
-        });
-    }
+//         // Likely an inconsistent state. 
+//         // Leader has rewinded more than necessary.
+//         return Err(AppendEntriesRPCError::LeaderHasRewindedExcessively { 
+//             self_id: receiver_node.metadata.id, 
+//             requested_node_id: request.leader_id, 
+//             requested_previous_log_index: 0, 
+//             requested_previous_log_term: 0, 
+//             self_log_len: receiver_node.persistent_state.log.len(), 
+//             latest_term: request.term, 
+//             commit_index: request.leader_commit_index,
+//             requested_entries_len: request.entries.len()
+//         });
+//     }
 
 
-    // First normalize the indices to 0-based.
-    let requested_previous_log_index = request.previous_log_index - 1;
+//     // First normalize the indices to 0-based.
+//     let requested_previous_log_index = request.previous_log_index - 1;
 
-    // What's the term of the entry in our log at this index?
-    match receiver_node.persistent_state.log.get(requested_previous_log_index) 
-    {
-        Some((self_previous_log_term, _)) => {
-            // We do have some entry at that index.
-            if *self_previous_log_term != request.previous_log_term {
-                // Different terms so a log inconsistency. (Section 5.3)
-                return Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry { 
-                    self_id: receiver_node.metadata.id, 
-                    requested_node_id: request.leader_id,
-                    requested_previous_log_index: request.previous_log_index,
-                    requested_previous_log_term: request.previous_log_term, 
-                    self_previous_log_index: request.previous_log_index,
-                    self_previous_log_term: *self_previous_log_term, 
-                    latest_term: request.term
-                });
-            }
-        },
-        None => {
-            // Leader points to a tail that we don't have.
-            // This is a log inconsistency.
-            return Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry { 
-                self_id: receiver_node.metadata.id, 
-                requested_node_id: request.leader_id,
-                requested_previous_log_index: request.previous_log_index,
-                requested_previous_log_term: request.previous_log_term, 
-                self_previous_log_index: request.previous_log_index, // doesn't matter because we don't have that entry.
-                self_previous_log_term: 0, 
-                latest_term: request.term
-            });
-        }
-    }
+//     // What's the term of the entry in our log at this index?
+//     match receiver_node.persistent_state.log.get(requested_previous_log_index) 
+//     {
+//         Some((self_previous_log_term, _)) => {
+//             // We do have some entry at that index.
+//             if *self_previous_log_term != request.previous_log_term {
+//                 // Different terms so a log inconsistency. (Section 5.3)
+//                 return Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry { 
+//                     self_id: receiver_node.metadata.id, 
+//                     requested_node_id: request.leader_id,
+//                     requested_previous_log_index: request.previous_log_index,
+//                     requested_previous_log_term: request.previous_log_term, 
+//                     self_previous_log_index: request.previous_log_index,
+//                     self_previous_log_term: *self_previous_log_term, 
+//                     latest_term: request.term,
+//                     requested_entries_len: request.entries.len()
+//                 });
+//             }
+//         },
+//         None => {
+//             // Leader points to a tail that we don't have.
+//             // This is a log inconsistency.
+//             return Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry { 
+//                 self_id: receiver_node.metadata.id, 
+//                 requested_node_id: request.leader_id,
+//                 requested_previous_log_index: request.previous_log_index,
+//                 requested_previous_log_term: request.previous_log_term, 
+//                 self_previous_log_index: request.previous_log_index, // doesn't matter because we don't have that entry.
+//                 self_previous_log_term: 0, 
+//                 latest_term: request.term,
+//                 requested_entries_len: request.entries.len()
+//             });
+//         }
+//     }
 
-    // Heartbeat won't mutate any state so we can return here.
-    return Ok(AppendEntriesResponse { term: request.term, success: true });
-}
+//     // Heartbeat won't mutate any state so we can return here.
+//     return Ok(AppendEntriesResponse { term: request.term, success: true });
+// }
 
 pub fn handle_append_entries(
     receiver_node: &mut RaftNode,
@@ -182,50 +196,180 @@ pub fn handle_append_entries(
             self_id: receiver_node.metadata.id,
             handler_term: receiver_node.persistent_state.current_term,
             requested_term: request.term,
-            latest_term: receiver_node.persistent_state.current_term
+            latest_term: receiver_node.persistent_state.current_term,
+            requested_entries_len: request.entries.len()
         });
     }
 
-    if request.entries.len() == 0 {
-        // This is a hearbeat request.
-        // No need to make any mutations to our states.
+    if receiver_node.persistent_state.log.is_empty() {
+        // We have an empty log.
+        if request.previous_log_index == 0 {
+            // So does the leader.
 
-        // Just be a happy little node and respond to the question:
-        // Does our log contain an entry at previous_log_index that has term previous_log_term?
-        return handle_heartbeat(receiver_node, request)
+            if !request.entries.is_empty() {
+                // Just append the new entries to our log if available.
+                let num_entries = request.entries.len();
+                
+                trace!("Clearing our log and replacing it with ({num_entries}) entries provided by the leader");
+                receiver_node.persistent_state.log.clear();
+                receiver_node.persistent_state.log.extend(request.entries.into_iter());
+            }
+
+            return Ok(AppendEntriesResponse { term: request.term, success: true });
+        }
+
+        // Leader has some entries in the log and has asked us to locate a tail, which
+        // we don't have.
+
+        // This may happen if we were in the minority
+        // of nodes that failed to replicate some of the logs
+        // at some point in the past. Now, the leader claims
+        // it has some entries but we don't have anything in our local log.
+        // This is a log inconsistency and we let the leader know
+        // of it. The leader will retry later. (Section 5.3)
+        
+        // Eventually, the leader will realize we need the full log
+        // and we'll get all the new entries to append and
+        // we'll be up to speed.
+
+        return Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry {
+            self_id: receiver_node.metadata.id, 
+            requested_node_id: request.leader_id, 
+            requested_previous_log_index: request.previous_log_index, 
+            requested_previous_log_term: request.previous_log_term, 
+            self_previous_log_index: 0, // because our log is empty in this case. 
+            self_previous_log_term: 0, // this is irrelevant if our log is empty.
+            latest_term: request.term,
+            requested_entries_len: request.entries.len()
+        });
     }
 
-    todo!("Add implementation for non-heartbeats.");
+    // We have some entries in our local log.
+    // Do we have one at the specified index though?
 
-    // match request.previous_log_index.cmp(&0) {
-    //     Ordering::Equal => {
-    //         //
-    //         // Since log indices are 1-based, we use an index of 0 to denote
-    //         // the leader's log is empty.
-    //         // Either we have an empty log,
-    //         // or we must remove everything 
-    //         // from our log anyways.
-            
-    //         // This is quite rare and may only happen
-    //         // if something causes a leader's committed state 
-    //         // to lag behind a follower severely. 
-    //         // In practice, we won't need to clear
-    //         // our potentially large log frequently because
-    //         // a leader shouldn't lag very far behind in committing entries
-    //         // to its log.
-    //         receiver_node.persistent_state.log.clear();
+    // If we don't have enough entries, just stop early.
+    if receiver_node.persistent_state.log.len() < request.previous_log_index {
+        // Leader doesn't have a valid tail to point to.
+        // Our stored log doesn't contain the tail entry that the leader wants us to
+        // append new entries to.
+        return Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry { 
+            self_id: receiver_node.metadata.id, 
+            requested_node_id: request.leader_id, 
+            requested_previous_log_index: request.previous_log_index, 
+            requested_previous_log_term: request.previous_log_term, 
+            self_previous_log_index: 0, 
+            self_previous_log_term: 0, 
+            latest_term: request.term, 
+            requested_entries_len: request.entries.len()
+        });
+    }
+
+        
+        // Find the first entry from given entries that our log doesn't contain.
+        
+        // Get terms of all requested entries.
+        let requested_entries_terms = 
+            request
+            .entries
+            .iter()
+            .map(|entry| entry.term());
 
 
-    //     },
-    //     Ordering::Greater => {
+        // Get terms of all stored entries starting from (and including)
+        // the tail entry.
+        // If request.previous_log_index is 0, it means no tail entry exists 
+        // and we must start from the first entry.
+        let stored_entries_terms = 
+            receiver_node
+            .persistent_state
+            .log
+            .iter()
+            .skip(request.previous_log_index) // Start at the given tail entry.
+            .map(|entry| entry.term());
 
-    //     },
-    //     Ordering::Less => {
-    //         panic!("previous log index is negative. This cannot happen.")
-    //     }
-    // }
+        let mut should_extend_remaining_entries_from: Option<usize> = None;
+        let mut should_remove_stored_entries_from: Option<usize> = None;
+        
+        let first_conflicting_index = 
+        requested_entries_terms
+        .zip_longest(stored_entries_terms)
+        .enumerate()
+        .position(|(index, pair)| {
+            match pair {
+                // The position iterator short-circuits either at the first non-matching term pair,
+                // or when we have exhausted all stored entries.
+                EitherOrBoth::Both(requested_entry, stored_entry) => {
+                    if requested_entry != stored_entry {
+                        // Found a conflicting index. Mark it so that we can continue adding requested entries from
+                        // this index.
+                        should_extend_remaining_entries_from = Some(index);
+                        true
+                    }
+                    else {
+                        false
+                    }
+                },
+                // This may only get evaluated once, when the stored entries are exhausted.
+                // If we reach here, it must mean there were no conflicting pairs.
+                EitherOrBoth::Left(_) => {
+                    // Our stored log is a prefix of the requested entries.
+                    // Now we must append the remaining entries.
+                    // First time this happens, we store the index.
+                    if should_extend_remaining_entries_from.is_none() {
+                        should_extend_remaining_entries_from = Some(index);
+                    }
+                    false
+                },
+                EitherOrBoth::Right(_) => {
+                    // The requested entries are already a sub-array of our stored log.
+                    // If our stored log as more entries (i.e. a suffix that doesn't exist in the requested entries),
+                    // then mark its starting point.
+                    if should_remove_stored_entries_from.is_none() {
+                        should_remove_stored_entries_from = Some(request.previous_log_index + index);
+                    }
+                    false
+                },
+            }
+        });
 
-    // Ok(AppendEntriesResponse { term: request.term, success: true })
+        match first_conflicting_index {
+            Some(index_to_remove_from) => {
+                // We need to remove all stored entries including and following (previous_log_index + index).
+                let index_to_drain_local_log_from = request.previous_log_index + index_to_remove_from;
+
+                let removed_local_entries = receiver_node.persistent_state.log.drain(index_to_drain_local_log_from..).collect::<Vec<Log>>();
+                let removed_count = removed_local_entries.len();
+                trace!("Found inconsistent log. Removed local entries (count: {removed_count}, range: ({index_to_drain_local_log_from}..))");
+            },
+            None => {
+                // Logs are consistent so far.
+            }
+        }
+
+        // We can guarantee that exactly one of should_remove_stored_entries_from
+        // or should_extend_remaining_entries_from is Some, if any at all.
+        assert!(!(should_extend_remaining_entries_from.is_some() && should_remove_stored_entries_from.is_some()));
+
+        // Either we need to remove an extra suffix from our log,
+        if let Some(index_of_suffix_to_remove) = should_remove_stored_entries_from {
+            receiver_node.persistent_state.log.drain(index_of_suffix_to_remove..);
+        }
+
+        // Or we may append a suffix from the requested entries.
+        if let Some(index_to_extend_from) = should_extend_remaining_entries_from {
+            receiver_node.persistent_state.log.extend_from_slice(
+                request.entries.get(index_to_extend_from..).unwrap()
+            );
+        }
+
+        // Update our commit index to include our newly updated entries which the leader 
+        // guarantees to have committed.
+        let last_new_entry_index = receiver_node.persistent_state.log.len();
+        if request.leader_commit_index > receiver_node.volatile_state.commit_index {
+            receiver_node.volatile_state.commit_index = request.leader_commit_index.min(last_new_entry_index)
+        }
+
+        return Ok(AppendEntriesResponse{ term: request.term, success: true });
 }
 
 
@@ -242,7 +386,7 @@ pub mod tests {
         leader_id: usize,
         previous_log_index: usize,
         previous_log_term: usize,
-        entries: Vec<Bytes>,
+        entries: Vec<Log>,
         leader_commit_index: usize
     ) -> AppendEntriesRequest {
         AppendEntriesRequest { term, leader_id, previous_log_index, previous_log_term, entries, leader_commit_index }

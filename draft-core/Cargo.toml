@@ -27,3 +27,5 @@ serde = { version = "^1", features = ["derive"]}
 color-eyre = "0.6.2"
 tracing = { version = "*" }
 thiserror = { version = "1.0.32" }
+derivative = "2.2.0"
+itertools = "0.10.3"

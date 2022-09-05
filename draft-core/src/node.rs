@@ -7,6 +7,17 @@ use std::path::PathBuf;
 pub type Log = (usize, Bytes);
 pub type Port = u16;
 
+pub trait Term {
+    fn term(&self) -> usize;
+}
+
+impl Term for Log {
+    fn term(&self) -> usize {
+        self.0
+    }
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Builder, PartialEq, Eq)]
 #[builder(default)]
 pub struct NodeMetadata {
