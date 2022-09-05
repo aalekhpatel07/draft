@@ -1,9 +1,10 @@
+use bytes::Bytes;
 use derive_builder::Builder;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub type Log<T> = (usize, T);
+pub type Log = (usize, Bytes);
 pub type Port = u16;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Builder, PartialEq, Eq)]
@@ -35,9 +36,9 @@ impl NodeMetadataBuilder {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Builder, Default, PartialEq, Eq)]
-pub struct PersistentState<T> {
+pub struct PersistentState {
     #[builder(default = "vec![]")]
-    pub log: Vec<Log<T>>,
+    pub log: Vec<Log>,
     #[builder(default = "0")]
     pub current_term: usize,
     #[builder(default = "None")]
@@ -72,7 +73,7 @@ pub struct RaftNode {
     #[builder(default = "HashMap::new()")]
     pub cluster: HashMap<usize, NodeMetadata>,
     #[builder(default)]
-    pub persistent_state: PersistentState<String>,
+    pub persistent_state: PersistentState,
     #[builder(default)]
     pub volatile_state: VolatileState,
     #[builder(default)]
@@ -103,14 +104,14 @@ mod tests {
     fn it_works() {
         let state = PersistentStateBuilder::default()
             .current_term(10)
-            .log(vec![(10, "hello".to_string())])
+            .log(vec![(10, Bytes::from("hello"))])
             .build()
             .expect("Couldn't build persistent state with builder.");
 
         assert_eq!(state.current_term, 10);
         assert_eq!(state.log.len(), 1);
         assert_eq!(state.log[0].0, 10);
-        assert_eq!(state.log[0].1, "hello".to_string());
+        assert_eq!(state.log[0].1, Bytes::from("hello"));
         assert_eq!(state.voted_for, None);
     }
 
@@ -118,7 +119,7 @@ mod tests {
     fn save_to_disk_works() {
         let state = PersistentStateBuilder::default()
             .current_term(10)
-            .log(vec![(10, "hello".to_string())])
+            .log(vec![(10, Bytes::from("hello"))])
             .build()
             .expect("Couldn't build persistent state with builder.");
         let raft = RaftNodeBuilder::default()
