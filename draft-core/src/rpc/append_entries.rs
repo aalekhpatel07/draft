@@ -22,6 +22,13 @@ pub struct AppendEntriesRequest {
     pub leader_commit_index: usize
 }
 
+impl AppendEntriesRequest {
+    pub fn is_heartbeat(&self) -> bool {
+        self.entries.is_empty()
+    } 
+}
+
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppendEntriesResponse {
     pub term: usize,
@@ -183,8 +190,8 @@ pub enum AppendEntriesRPCError {
 //     return Ok(AppendEntriesResponse { term: request.term, success: true });
 // }
 
-pub fn handle_append_entries(
-    receiver_node: &mut RaftNode,
+pub fn handle_append_entries<S>(
+    receiver_node: &mut RaftNode<S>,
     request: AppendEntriesRequest
 ) -> Result<AppendEntriesResponse, AppendEntriesRPCError> 
 {
@@ -213,6 +220,13 @@ pub fn handle_append_entries(
                 trace!("Clearing our log and replacing it with ({num_entries}) entries provided by the leader");
                 receiver_node.persistent_state.log.clear();
                 receiver_node.persistent_state.log.extend(request.entries.into_iter());
+            }
+
+            // Update our commit index to include our newly updated entries which the leader 
+            // guarantees to have committed.
+            let last_new_entry_index = receiver_node.persistent_state.log.len();
+            if request.leader_commit_index > receiver_node.volatile_state.commit_index {
+                receiver_node.volatile_state.commit_index = request.leader_commit_index.min(last_new_entry_index)
             }
 
             return Ok(AppendEntriesResponse { term: request.term, success: true });
@@ -325,6 +339,12 @@ pub fn handle_append_entries(
                 // but stored entries are not.
                 // If we reach here, it must mean there were no conflicting pairs.
                 EitherOrBoth::Right(_) => {
+                    // If it is a heartbeat,
+                    // don't delete any suffix.
+                    if request.is_heartbeat() {
+                        return false;
+                    }
+
                     // The requested entries are already a sub-array of our stored log.
                     // If our stored log as more entries (i.e. a suffix that doesn't exist in the requested entries),
                     // then mark its starting point.
@@ -350,7 +370,7 @@ pub fn handle_append_entries(
             }
         }
 
-        // We can guarantee that exactly one of should_remove_stored_entries_from
+        // We can guarantee that at most one of should_remove_stored_entries_from
         // or should_extend_remaining_entries_from is Some, if any at all.
         assert!(!(should_extend_remaining_entries_from.is_some() && should_remove_stored_entries_from.is_some()));
 
@@ -381,38 +401,6 @@ pub fn handle_append_entries(
 pub mod tests {
     pub use crate::*;
     pub use super::*;
-    pub use hashbrown::HashMap;
-
-
-    #[allow(dead_code)]
-    fn append_entries_request(
-        term: usize,
-        leader_id: usize,
-        previous_log_index: usize,
-        previous_log_term: usize,
-        entries: Vec<Log>,
-        leader_commit_index: usize
-    ) -> AppendEntriesRequest {
-        AppendEntriesRequest { term, leader_id, previous_log_index, previous_log_term, entries, leader_commit_index }
-    }
-
-    #[allow(dead_code)]
-    fn persistent_state(current_term: usize, voted_for: Option<usize>, log: Vec<Log>) -> PersistentState
-    {
-        PersistentState { log, current_term, voted_for }
-    }
-
-    #[allow(dead_code)]
-    fn volatile_state(
-        commit_index: usize, 
-        last_applied: usize, 
-        next_index: Option<HashMap<usize, Option<usize>>>,
-        match_index: Option<HashMap<usize, Option<usize>>>
-    ) -> VolatileState 
-    {
-        VolatileState { commit_index, last_applied, next_index, match_index }
-    }
-
 
     macro_rules! append_entries_test {
         (
@@ -429,32 +417,113 @@ pub mod tests {
             #[test]
             pub fn $func_name() {
                 utils::set_up_logging();
-                let mut receiver_raft = RaftNode::default();
+                let mut receiver_raft: RaftNode<BufferBackend> = RaftNode::default();
                 
                 receiver_raft.persistent_state = $initial_persistent_state;
                 receiver_raft.volatile_state = $initial_volatile_state;
+
+                assert!(receiver_raft.are_terms_non_decreasing());
 
                 let request: AppendEntriesRequest = $request;
                 let observed_response = receiver_raft.try_handle_append_entries(request);
                 
                 assert!(matches!(observed_response, $response));
-
                 assert_eq!(receiver_raft.persistent_state, $final_persistent_state);
+                assert_eq!(receiver_raft.load().unwrap().persistent_state, $final_persistent_state);
                 assert_eq!(receiver_raft.volatile_state, $final_volatile_state);
+
+                assert!(receiver_raft.are_terms_non_decreasing());
+
             }
         };
     }
 
     append_entries_test!(
-        /// Basic append entries.
-        basic,
+        /// An out-of-date leader is rejected the request.
+        reject_out_of_date_leader,
+        persistent_state(2, None, vec![]),
+        volatile_state(0, 0, None, None),
+        append_entries_request(1, 1, 0, 0, vec![], 0),
+        Err(AppendEntriesRPCError::NodeOutOfDate { latest_term: 2, .. }),
+        persistent_state(2, None, vec![]),
+        volatile_state(0, 0, None, None)
+    );
+
+
+    append_entries_test!(
+        /// A heartbeat is acknowledged by the follower.
+        heartbeat_basic,
         persistent_state(0, Some(1), vec![]),
         volatile_state(0, 0, None, None),
         append_entries_request(0, 1, 0, 0, vec![], 0),
-        Ok(AppendEntriesResponse { term: 0, success: true }),
+        Ok(AppendEntriesResponse { term: 0, success: true}),
         persistent_state(0, Some(1), vec![]),
         volatile_state(0, 0, None, None)
     );
 
+    append_entries_test!(
+        /// A heartbeat is acknowledged by the follower when it already has some entries.
+        heartbeat_acknowledged_when_already_have_some_entries,
+        persistent_state(0, Some(1), vec![0]),
+        volatile_state(0, 0, None, None),
+        append_entries_request(0, 1, 0, 0, vec![], 0),
+        Ok(AppendEntriesResponse { term: 0, success: true}),
+        persistent_state(0, Some(1), vec![0]),
+        volatile_state(0, 0, None, None)
+    );
+
+    append_entries_test!(
+        /// A heartbeat is acknowledged by the follower when it already has some entries and 
+        /// follower updates its commit index because leader guarantees it has been replicated
+        /// across a majority of the cluster.
+        heartbeat_acknowledged_when_already_have_some_entries_and_commit_index_updated,
+        persistent_state(0, Some(1), vec![0]),
+        volatile_state(0, 0, None, None),
+        append_entries_request(0, 1, 0, 0, vec![], 1),
+        Ok(AppendEntriesResponse { term: 0, success: true}),
+        persistent_state(0, Some(1), vec![0]),
+        volatile_state(1, 0, None, None)
+    );
+
+    append_entries_test!(
+        /// Suppose a leader is in term 8 and has entries with terms \[1, 1, 1, 4, 4, 5, 5, 6, 6, 6\]
+        /// in its log. Also it guarantees that the first three entries are committed, i.e. commit_index = 3.
+        /// At the same time suppose a follower already has a log with terms \[1, 1, 1, 4, 4, 5, 5, 6, 6\],
+        /// and is in term 6.
+        /// 
+        /// The leader requests the follower with a heartbeat and prev_log_index pointing to a tail (1-based index: 10, term: 6).
+        /// Since the follower does not have such a tail entry (i.e. it has only 9 entries in its log), it rejects the RPC.
+        /// It does not bump its committed index even though the leader shared that information. In this case,
+        /// the leader is expected to try again with a decremented previous_log_index, until the RPC succeeds.
+        /// 
+        /// Thus the RPC fails and the follower's log has no new entries, and its commit index stays as it was before the RPC.
+        /// Since the leader was in a new term, the follower acknowledges it and updates its current_term.
+        heartbeat_from_scenario_in_figure_7a,
+        persistent_state(6, Some(1), vec![1, 1, 1, 4, 4, 5, 5, 6, 6]),
+        volatile_state(0, 0, None, None),
+        append_entries_request(8, 1, 10, 6, vec![], 3),
+        Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry { requested_previous_log_index: 10, requested_previous_log_term: 6, self_previous_log_index: 0, self_previous_log_term: 0, latest_term: 8, requested_entries_len: 0, .. }),
+        persistent_state(8, Some(1), vec![1, 1, 1, 4, 4, 5, 5, 6, 6]),
+        volatile_state(0, 0, None, None)
+    );
+
+    append_entries_test!(
+        /// Suppose a leader is in term 8 and has entries with terms \[1, 1, 1, 4, 4, 5, 5, 6, 6, 6\]
+        /// in its log. Also it guarantees that the first three entries are committed, i.e. commit_index = 3.
+        /// At the same time suppose a follower already has a log with terms \[1, 1, 1, 4, 4, 5, 5, 6, 6\],
+        /// and was in term 6.
+        /// 
+        /// The leader requests the follower to append an entry with term 6 at a tail (1-based index: 9, term: 6).
+        /// Since the follower has that tail entry, it appends the new entry to it, and bumps its commit index.
+        /// Thus the RPC succeeds and the follower's log has a new entry, and its commit index is bumped to the leader's.
+        /// Since the leader was in a new term, the follower acknowledges it and updates its current_term.
+        append_entry_works_from_scenario_in_figure_7a,
+        persistent_state(6, Some(1), vec![1, 1, 1, 4, 4, 5, 5, 6, 6]),
+        volatile_state(0, 0, None, None),
+        append_entries_request(8, 1, 9, 6, vec![6], 3),
+        Ok(AppendEntriesResponse { term: 8, success: true }),
+        persistent_state(8, Some(1), vec![1, 1, 1, 4, 4, 5, 5, 6, 6, 6]),
+        volatile_state(3, 0, None, None)
+    );
 
 }

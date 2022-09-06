@@ -1,9 +1,11 @@
 mod node;
 mod rpc;
 pub mod utils;
+mod storage;
 
 pub use node::*;
 pub use rpc::*;
+pub use storage::*;
 
 #[cfg(test)]
 mod tests {

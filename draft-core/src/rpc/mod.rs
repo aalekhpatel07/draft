@@ -1,11 +1,14 @@
 mod request_vote;
 mod append_entries;
+mod utils;
 
 pub use request_vote::*;
 pub use append_entries::*;
+use serde::{Deserialize, de::DeserializeOwned, Serialize};
+pub use utils::*;
 
 use tracing::{instrument, error};
-use crate::node::RaftNode;
+use crate::{node::RaftNode, Storage};
 
 
 /// Whoever implements this trait must propagate any errors that occur during the RPC call.
@@ -34,21 +37,45 @@ pub trait RaftRPC {
 }
 
 
-impl TryRaftRPC for RaftNode {
+impl<S> TryRaftRPC for RaftNode<S> 
+where
+    S: Storage + Serialize + DeserializeOwned + Clone
+{
     #[instrument(skip(self), target = "rpc::AppendEntries")]
     fn try_handle_append_entries(
         &mut self,
         request: AppendEntriesRequest,
     ) -> Result<AppendEntriesResponse, AppendEntriesRPCError> {
+        let requested_term = request.term;
+
         let res = handle_append_entries(self, request);
         match res {
             Ok(result) => {
-                if let Err(e) = self.save_to_disk() {
+                self.persistent_state.current_term = result.term;
+                
+                if let Err(e) = self.save() {
                     error!("{}", e.to_string());
                 }
                 Ok(result)
             },
-            Err(err) => Err(err)
+            Err(err) => {
+                match err {
+                    AppendEntriesRPCError::NodeOutOfDate { latest_term, .. } => {
+                        self.persistent_state.current_term = latest_term;
+                        if let Err(e) = self.save() {
+                            error!("{}", e.to_string());
+                        }
+                        Err(err)
+                    },
+                    e => {
+                        self.persistent_state.current_term = requested_term;
+                        if let Err(e) = self.save() {
+                            error!("{}", e.to_string());
+                        }
+                        Err(e)
+                    }
+                }
+            }
         }
     }
     /// Given a vote request RPC, process the request without making any modifications to the state
@@ -62,7 +89,10 @@ impl TryRaftRPC for RaftNode {
     }
 }
 
-impl RaftRPC for RaftNode {
+impl<S> RaftRPC for RaftNode<S> 
+where
+    S: Storage + Serialize + DeserializeOwned + Clone
+{
     fn handle_append_entries(
         &mut self,
         request: AppendEntriesRequest,
@@ -98,7 +128,7 @@ impl RaftRPC for RaftNode {
                 // We must grant vote now.
                 self.persistent_state.voted_for = Some(candidate_id);
                 self.persistent_state.current_term = response.term;
-                self.save_to_disk()?;
+                self.save()?;
 
                 Ok(response)
             },
@@ -113,3 +143,4 @@ impl RaftRPC for RaftNode {
         }
     }
 }
+

@@ -1,8 +1,11 @@
 use bytes::Bytes;
 use derive_builder::Builder;
 use hashbrown::HashMap;
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use rand::{distributions::Alphanumeric, Rng};
+use serde::{Deserialize, Serialize, de::{DeserializeOwned, Visitor, Error}, ser::SerializeStruct, de};
+use std::{path::{PathBuf, Path, self}, io::Write, sync::Arc};
+
+use crate::{Storage, FileStorageBackend, BufferBackend};
 
 pub type Log = (usize, Bytes);
 pub type Port = u16;
@@ -18,33 +21,23 @@ impl Term for Log {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, Builder, PartialEq, Eq)]
-#[builder(default)]
+#[derive(Debug, Clone, PartialEq, Builder, Eq, Serialize, Deserialize)]
 pub struct NodeMetadata {
     pub id: usize,
-    #[builder(default = "8000")]
     pub port: Port,
-    #[builder(default = "self.default_log_file_path()?")]
-    pub log_file_path: PathBuf,
 }
 
-impl NodeMetadataBuilder {
-    fn default_log_file_path(&self) -> Result<PathBuf, String> {
-        match self.log_file_path {
-            Some(ref log_file_path) => {
-                let path = PathBuf::from(log_file_path);
-                if !path.exists() || path.is_file() {
-                    Ok(path
-                        .canonicalize()
-                        .expect("Failed to canonicalize log file path"))
-                } else {
-                    Err(format!("Log file path {:#?} is not a file", log_file_path))
-                }
-            }
-            None => Err("log_file_path is required".to_string()),
+impl Default for NodeMetadata 
+{
+    fn default() -> Self {
+
+        Self {
+            id: 0,
+            port: 8000,
         }
     }
 }
+
 
 #[derive(Clone, Debug, Serialize, Deserialize, Builder, Default, PartialEq, Eq)]
 pub struct PersistentState {
@@ -78,32 +71,98 @@ impl Default for ElectionState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Builder, Default, PartialEq, Eq)]
-pub struct RaftNode {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftNode<S>
+{
     pub metadata: NodeMetadata,
-    #[builder(default = "HashMap::new()")]
     pub cluster: HashMap<usize, NodeMetadata>,
-    #[builder(default)]
     pub persistent_state: PersistentState,
-    #[builder(default)]
     pub volatile_state: VolatileState,
-    #[builder(default)]
     pub election_state: ElectionState,
+    pub storage: S
 }
 
-impl RaftNode {
-    pub fn save_to_disk(&self) -> color_eyre::Result<usize> {
-        let file_path = self.metadata.log_file_path.clone();
-        let as_bytes = rmp_serde::to_vec(self)?;
-        let total_bytes = as_bytes.len();
-        std::fs::write(file_path, as_bytes)?;
-        Ok(total_bytes)
+impl Default for RaftNode<FileStorageBackend> 
+{
+    fn default() -> Self {
+        Self {
+            metadata: NodeMetadata::default(),
+            cluster: HashMap::new(),
+            persistent_state: PersistentState::default(),
+            volatile_state: VolatileState::default(),
+            election_state: ElectionState::Follower,
+            storage: FileStorageBackend::new("/tmp/raft.d")
+        }
     }
-    pub fn reload_from_disk(&self) -> color_eyre::Result<Self> {
-        let file_path = self.metadata.log_file_path.clone();
-        let as_bytes = std::fs::read(file_path)?;
-        let res = rmp_serde::decode::from_slice(&as_bytes)?;
-        Ok(res)
+}
+
+impl Default for RaftNode<BufferBackend>
+{
+    fn default() -> Self {
+        Self {
+            metadata: NodeMetadata::default(),
+            cluster: HashMap::new(),
+            persistent_state: PersistentState::default(),
+            volatile_state: VolatileState::default(),
+            election_state: ElectionState::Follower,
+            storage: BufferBackend::new()
+        }
+    }
+}
+
+
+
+impl<S> RaftNode<S>
+where
+    S: Storage + Serialize + DeserializeOwned + Clone
+{
+    pub fn save(&self) -> color_eyre::Result<usize> {
+        match serde_json::to_vec(&self.persistent_state) {
+            Ok(serialized_data) => {
+                Ok(self.storage.save(&serialized_data)?)
+            },
+            Err(e) => {
+                Err(e.into())
+            }
+        }
+    }
+    pub fn load(&self) -> color_eyre::Result<Self> {
+        match self.storage.load() {
+            Ok(serialized_data) => {
+                let persistent_state: PersistentState = serde_json::from_slice(&serialized_data)?;
+
+                Ok(Self {
+                    persistent_state,
+                    metadata: self.metadata.clone(),
+                    cluster: self.cluster.clone(),
+                    volatile_state: self.volatile_state.clone(),
+                    election_state: self.election_state.clone(),
+                    storage: self.storage.clone()
+                })
+            },
+            Err(e) => {
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Determine whether all entries in our log have non-decreasing terms.
+    #[cfg(test)]
+    pub fn are_terms_non_decreasing(&self) -> bool {
+        self
+        .persistent_state
+        .log
+        .iter()
+        .zip(
+            self
+            .persistent_state
+            .log
+            .iter()
+            .skip(1)
+        )
+        .all(|(predecessor_entry, successor_entry)| {
+            successor_entry.term() >= predecessor_entry.term()
+        })
     }
 }
 
@@ -111,6 +170,13 @@ impl RaftNode {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn default_node_has_log_path_configured() {
+        let node: RaftNode<FileStorageBackend> = RaftNode::default();
+        assert_eq!(node.storage.log_file_path, PathBuf::from("/tmp/raft.d"))
+
+    }
     #[test]
     fn it_works() {
         let state = PersistentStateBuilder::default()
@@ -133,19 +199,28 @@ mod tests {
             .log(vec![(10, Bytes::from("hello"))])
             .build()
             .expect("Couldn't build persistent state with builder.");
-        let raft = RaftNodeBuilder::default()
-            .persistent_state(state)
-            .metadata(
-                NodeMetadataBuilder::default()
-                    .log_file_path(PathBuf::from("/tmp/raftd.conf"))
-                    .build()
-                    .expect("Couldn't build metadata with builder."),
-            )
-            .build()
-            .expect("Couldn't build raft node with builder.");
 
-        raft.save_to_disk().unwrap();
-        let reloaded = raft.reload_from_disk().unwrap();
+        let mut raft: RaftNode<FileStorageBackend> = RaftNode::default();
+        raft.persistent_state = state;
+
+        raft.save().unwrap();
+        let reloaded = raft.load().unwrap();
+        assert_eq!(reloaded, raft);
+    }
+
+    #[test]
+    fn save_to_buffer_works() {
+        let state = PersistentStateBuilder::default()
+            .current_term(10)
+            .log(vec![(10, Bytes::from("hello"))])
+            .build()
+            .expect("Couldn't build persistent state with builder.");
+
+        let mut raft: RaftNode<BufferBackend> = RaftNode::default();
+        raft.persistent_state = state;
+
+        raft.save().unwrap();
+        let reloaded = raft.load().unwrap();
         assert_eq!(reloaded, raft);
     }
 }

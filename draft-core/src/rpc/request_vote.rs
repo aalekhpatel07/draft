@@ -78,8 +78,8 @@ pub enum RequestVoteRPCError {
 
 /// Given a vote request RPC, process the request without making any modifications to the state
 /// as described in Section 5.4.1 and Figure 3.
-pub fn handle_request_vote(
-    receiver_node: &RaftNode,
+pub fn handle_request_vote<S>(
+    receiver_node: &RaftNode<S>,
     request: VoteRequest,
 ) -> Result<VoteResponse, RequestVoteRPCError> {
     if request.term < receiver_node.persistent_state.current_term {
@@ -190,15 +190,6 @@ mod tests {
     pub use super::*;
     pub use crate::*;
 
-    #[allow(dead_code)]
-    fn vote_request(term: usize, candidate_id: usize, last_log_index: usize, last_log_term: usize) -> VoteRequest {
-        VoteRequest { term, candidate_id, last_log_index, last_log_term }
-    }
-    #[allow(dead_code)]
-    fn persistent_state(current_term: usize, voted_for: Option<usize>, log: Vec<Log>) -> PersistentState{
-        PersistentState { log, current_term, voted_for }
-    }
-
     macro_rules! request_vote_test {
         (
             $(#[$meta:meta])*
@@ -211,11 +202,13 @@ mod tests {
             #[test]
             pub fn $func_name() {
                 utils::set_up_logging();
-                let mut receiver_raft = RaftNode::default();
+                let mut receiver_raft: RaftNode<BufferBackend> = RaftNode::default();
                 receiver_raft.persistent_state = $initial_persistent_state;
+                assert!(receiver_raft.are_terms_non_decreasing());
                 let request: VoteRequest = $request;
                 let observed_response = receiver_raft.try_handle_request_vote(request);
                 assert!(matches!(observed_response, $response));
+                assert!(receiver_raft.are_terms_non_decreasing());
             }
         };
     }
@@ -299,7 +292,7 @@ mod tests {
         /// if the receiver has not already voted
         /// and has a fresher log than the candidate.
         reject_vote_if_not_already_voted_but_candidate_log_is_stale,
-        persistent_state(2, None, vec![(1, "a".to_string().into())]),
+        persistent_state(2, None, vec![1]),
         vote_request(2, 1, 0, 0),
         Err(RequestVoteRPCError::CandidateNodeHasEmptyLog { 
             self_id: 0, 
@@ -316,7 +309,7 @@ mod tests {
         /// if the receiver has not already voted
         /// and has candidate has the same log as receiver's.
         grant_vote_if_not_already_voted_and_candidate_log_is_same_as_receiver_log,
-        persistent_state(2, None, vec![(1, "a".to_string().into())]),
+        persistent_state(2, None, vec![1]),
         vote_request(2, 1, 1, 1),
         Ok(VoteResponse { term: 2, vote_granted: true })
     );
@@ -328,7 +321,7 @@ mod tests {
         /// and has the candidate's last log term 
         /// is earlier than the receiver's last entry's.
         reject_vote_if_not_already_voted_and_candidate_last_log_term_is_earlier_than_receiver_log_last_entry_term,
-        persistent_state(2, None, vec![(2, "".to_string().into())]),
+        persistent_state(2, None, vec![2]),
         vote_request(2, 1, 1, 1),
         Err(RequestVoteRPCError::CandidateNodeHasStaleLog { 
             self_id: 0, 
@@ -348,7 +341,7 @@ mod tests {
         /// and has the candidate has less entries
         /// than the recipient node.
         reject_vote_if_not_already_voted_and_candidate_has_less_entries_than_receiver,
-        persistent_state(2, None, vec![(2, "".to_string().into()), (2, "".to_string().into())]),
+        persistent_state(2, None, vec![2, 2]),
         vote_request(2, 1, 1, 2),
         Err(RequestVoteRPCError::CandidateNodeHasStaleLog {
             self_id: 0, 
@@ -367,7 +360,7 @@ mod tests {
         /// if the receiver has not already voted
         /// and has the candidate has more entries than receiver.
         grant_vote_if_not_already_voted_and_candidate_has_more_entries_than_receiver,
-        persistent_state(1, Some(2), vec![(2, "".to_string().into()), (2, "".to_string().into())]),
+        persistent_state(1, Some(2), vec![2, 2]),
         vote_request(2, 1, 4, 3),
         Ok(VoteResponse { term: 2, vote_granted: true })
     );
@@ -379,7 +372,7 @@ mod tests {
         /// because it was able to determine that
         /// the candidate has even more stale log.
         reject_vote_if_already_voted_in_some_previous_term_but_candidate_has_more_stale_log_than_receiver,
-        persistent_state(2, Some(4), vec![(2, "".to_string().into()), (2, "".to_string().into())]),
+        persistent_state(2, Some(4), vec![2, 2]),
         vote_request(6, 1, 2, 1),
         Err(RequestVoteRPCError::CandidateNodeHasStaleLog {
             self_id: 0, 
@@ -399,7 +392,7 @@ mod tests {
         /// term but the candidate has more stale logs than the
         /// receiver.
         reject_vote_if_already_voted_for_the_same_candidate_in_this_term_but_candidate_has_more_stale_log_than_receiver,
-        persistent_state(2, Some(1), vec![(2, "".to_string().into()), (2, "".to_string().into())]),
+        persistent_state(2, Some(1), vec![2, 2]),
         vote_request(2, 1, 2, 1),
         Err(RequestVoteRPCError::CandidateNodeHasStaleLog {
             self_id: 0, 
@@ -418,7 +411,7 @@ mod tests {
         /// if it already voted for it in some previous term
         /// and the candidate has stale logs compared to the receiver.
         reject_vote_if_already_voted_for_the_same_candidate_in_some_previous_term_and_candidate_has_stale_log,
-        persistent_state(1, Some(1), vec![(2, "".to_string().into()), (2, "".to_string().into())]),
+        persistent_state(1, Some(1), vec![2, 2]),
         vote_request(2, 1, 2, 1),
         Err(RequestVoteRPCError::CandidateNodeHasStaleLog { 
             self_id: 0, 
