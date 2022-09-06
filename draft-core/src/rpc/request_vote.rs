@@ -190,6 +190,9 @@ mod tests {
     pub use super::*;
     pub use crate::*;
 
+    #[allow(unused_imports)]
+    pub use crate::rpc::utils::*;
+
     macro_rules! request_vote_test {
         (
             $(#[$meta:meta])*

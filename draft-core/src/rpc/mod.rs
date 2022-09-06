@@ -1,11 +1,10 @@
 mod request_vote;
 mod append_entries;
-mod utils;
+pub mod utils;
 
 pub use request_vote::*;
 pub use append_entries::*;
 use serde::{de::DeserializeOwned, Serialize};
-pub use utils::*;
 
 use tracing::{instrument, error};
 use crate::{node::RaftNode, Storage};

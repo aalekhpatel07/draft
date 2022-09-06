@@ -361,8 +361,7 @@ pub fn handle_append_entries<S>(
                 // We need to remove all stored entries including and following (previous_log_index + index).
                 let index_to_drain_local_log_from = request.previous_log_index + index_to_remove_from;
 
-                let removed_local_entries = receiver_node.persistent_state.log.drain(index_to_drain_local_log_from..).collect::<Vec<Log>>();
-                let removed_count = removed_local_entries.len();
+                let removed_count = receiver_node.persistent_state.log.drain(index_to_drain_local_log_from..).count();
                 trace!("Found inconsistent log. Removed local entries (count: {removed_count}, range: ({index_to_drain_local_log_from}..))");
             },
             None => {
@@ -401,6 +400,9 @@ pub fn handle_append_entries<S>(
 pub mod tests {
     pub use crate::*;
     pub use super::*;
+
+    #[allow(unused_imports)]
+    pub use crate::rpc::utils::*;
 
     macro_rules! append_entries_test {
         (

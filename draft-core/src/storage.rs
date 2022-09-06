@@ -50,9 +50,9 @@ impl PartialEq for BufferBackend {
 
         // Check by reference
         let ptr_equality = Arc::ptr_eq(&self._inner, &other._inner);
-        
+
         // Fall back to the locking the mutexes and comparing the inner buffer.
-        ptr_equality || (&*self._inner.lock().expect("Failed to lock the internal buffer.")) == (&*other._inner.lock().expect("Failed to lock internal buffer."))
+        ptr_equality || *self._inner.lock().expect("Failed to lock the internal buffer.") == *other._inner.lock().expect("Failed to lock internal buffer.")
     }
 }
 
@@ -67,6 +67,14 @@ impl BufferBackend
     {
         Self {
             _inner: Arc::new(Mutex::new(Vec::with_capacity(1024)))
+        }
+    }
+}
+
+impl Default for BufferBackend {
+    fn default() -> Self {
+        Self {
+            _inner: Arc::new(Mutex::new(Vec::default()))
         }
     }
 }
