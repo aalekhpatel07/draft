@@ -4,7 +4,7 @@ mod utils;
 
 pub use request_vote::*;
 pub use append_entries::*;
-use serde::{Deserialize, de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 pub use utils::*;
 
 use tracing::{instrument, error};
@@ -85,7 +85,7 @@ where
         &mut self,
         request: VoteRequest,
     ) -> Result<VoteResponse, RequestVoteRPCError> {
-        handle_request_vote(&self, request)
+        handle_request_vote(self, request)
     }
 }
 

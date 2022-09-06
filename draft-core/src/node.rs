@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use derive_builder::Builder;
 use hashbrown::HashMap;
-use rand::{distributions::Alphanumeric, Rng};
-use serde::{Deserialize, Serialize, de::{DeserializeOwned, Visitor, Error}, ser::SerializeStruct, de};
-use std::{path::{PathBuf, Path, self}, io::Write, sync::Arc};
+
+use serde::{Deserialize, Serialize, de::{DeserializeOwned}};
+use std::{io::Write};
 
 use crate::{Storage, FileStorageBackend, BufferBackend};
 
@@ -136,12 +136,12 @@ where
                     metadata: self.metadata.clone(),
                     cluster: self.cluster.clone(),
                     volatile_state: self.volatile_state.clone(),
-                    election_state: self.election_state.clone(),
+                    election_state: self.election_state,
                     storage: self.storage.clone()
                 })
             },
             Err(e) => {
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -169,7 +169,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use std::path::PathBuf;
 
     #[test]
     fn default_node_has_log_path_configured() {

@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use crate::rpc::{VoteRequest, AppendEntriesRequest};
-use crate::node::{PersistentState, VolatileState, Log};
+use crate::node::{PersistentState, VolatileState};
 use hashbrown::HashMap;
 
 

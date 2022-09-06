@@ -393,7 +393,7 @@ pub fn handle_append_entries<S>(
             receiver_node.volatile_state.commit_index = request.leader_commit_index.min(last_new_entry_index)
         }
 
-        return Ok(AppendEntriesResponse{ term: request.term, success: true });
+        Ok(AppendEntriesResponse{ term: request.term, success: true })
 }
 
 
