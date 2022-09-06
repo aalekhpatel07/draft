@@ -1,8 +1,5 @@
 use std::{path::{PathBuf, Path}, sync::{Arc, Mutex}, io::{Write, Read}};
 
-
-
-
 pub trait Storage: Default
 {
     fn save(&mut self, data: &[u8]) -> color_eyre::Result<usize>;
