@@ -4,7 +4,7 @@ use hashbrown::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BufferBackend, FileStorageBackend, Storage};
+use crate::storage::Storage;
 
 pub type Log = (usize, Bytes);
 pub type Port = u16;
@@ -63,7 +63,7 @@ impl Default for ElectionState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RaftNode<S> {
     pub metadata: NodeMetadata,
     pub cluster: HashMap<usize, NodeMetadata>,
@@ -72,32 +72,6 @@ pub struct RaftNode<S> {
     pub election_state: ElectionState,
     #[serde(skip)]
     pub storage: S,
-}
-
-impl Default for RaftNode<FileStorageBackend> {
-    fn default() -> Self {
-        Self {
-            metadata: NodeMetadata::default(),
-            cluster: HashMap::new(),
-            persistent_state: PersistentState::default(),
-            volatile_state: VolatileState::default(),
-            election_state: ElectionState::Follower,
-            storage: FileStorageBackend::new("/tmp/raft.d"),
-        }
-    }
-}
-
-impl Default for RaftNode<BufferBackend> {
-    fn default() -> Self {
-        Self {
-            metadata: NodeMetadata::default(),
-            cluster: HashMap::new(),
-            persistent_state: PersistentState::default(),
-            volatile_state: VolatileState::default(),
-            election_state: ElectionState::Follower,
-            storage: BufferBackend::new(),
-        }
-    }
 }
 
 impl<S> PartialEq for RaftNode<S>
@@ -152,7 +126,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::{path::PathBuf, fmt::Debug};
+
+    use crate::storage::{FileStorageBackend, BufferBackend};
 
     #[test]
     fn default_node_has_log_path_configured() {
@@ -174,39 +150,33 @@ mod tests {
         assert_eq!(state.voted_for, None);
     }
 
+    fn save_works<S>()
+    where
+        S: Storage + Debug
+    {
+        let state = PersistentStateBuilder::default()
+            .current_term(10)
+            .log(vec![(10, Bytes::from("hello"))])
+            .build()
+            .expect("Couldn't build persistent state with builder.");
+
+        let mut raft: RaftNode<S> = RaftNode::<S> {
+            persistent_state: state,
+            ..Default::default()
+        };
+
+        raft.save().unwrap();
+        let reloaded = raft.load().unwrap();
+        assert_eq!(reloaded, raft);
+    }
+
     #[test]
     fn save_to_disk_works() {
-        let state = PersistentStateBuilder::default()
-            .current_term(10)
-            .log(vec![(10, Bytes::from("hello"))])
-            .build()
-            .expect("Couldn't build persistent state with builder.");
-
-        let mut raft: RaftNode<FileStorageBackend> = RaftNode::<FileStorageBackend> {
-            persistent_state: state,
-            ..Default::default()
-        };
-
-        raft.save().unwrap();
-        let reloaded = raft.load().unwrap();
-        assert_eq!(reloaded, raft);
+        save_works::<FileStorageBackend>();
     }
-
     #[test]
     fn save_to_buffer_works() {
-        let state = PersistentStateBuilder::default()
-            .current_term(10)
-            .log(vec![(10, Bytes::from("hello"))])
-            .build()
-            .expect("Couldn't build persistent state with builder.");
-
-        let mut raft: RaftNode<FileStorageBackend> = RaftNode::<FileStorageBackend> {
-            persistent_state: state,
-            ..Default::default()
-        };
-
-        raft.save().unwrap();
-        let reloaded = raft.load().unwrap();
-        assert_eq!(reloaded, raft);
+        save_works::<BufferBackend>();
     }
+
 }
