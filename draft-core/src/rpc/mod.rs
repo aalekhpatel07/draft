@@ -38,7 +38,7 @@ pub trait RaftRPC {
 
 impl<S> TryRaftRPC for RaftNode<S> 
 where
-    S: Storage + Serialize + DeserializeOwned + Clone
+    S: Storage
 {
     #[instrument(skip(self), target = "rpc::AppendEntries")]
     fn try_handle_append_entries(
@@ -90,7 +90,7 @@ where
 
 impl<S> RaftRPC for RaftNode<S> 
 where
-    S: Storage + Serialize + DeserializeOwned + Clone
+    S: Storage
 {
     fn handle_append_entries(
         &mut self,

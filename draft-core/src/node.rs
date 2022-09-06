@@ -70,7 +70,7 @@ impl Default for ElectionState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RaftNode<S>
 {
     pub metadata: NodeMetadata,
@@ -78,6 +78,7 @@ pub struct RaftNode<S>
     pub persistent_state: PersistentState,
     pub volatile_state: VolatileState,
     pub election_state: ElectionState,
+    #[serde(skip)]
     pub storage: S
 }
 
@@ -109,14 +110,30 @@ impl Default for RaftNode<BufferBackend>
     }
 }
 
+impl<S> PartialEq for RaftNode<S>
+where
+    S: Storage
+{
+    /// Exclude self.storage from equality check.
+    fn eq(&self, other: &Self) -> bool {
+        self.metadata.eq(&other.metadata) &&
+        self.election_state.eq(&other.election_state) &&
+        self.persistent_state.eq(&other.persistent_state) &&
+        self.volatile_state.eq(&other.volatile_state) &&
+        self.cluster.eq(&other.cluster)
+    }
+}
 
+impl<S> Eq for RaftNode<S>
+where
+    S: Storage {}
 
 impl<S> RaftNode<S>
 where
-    S: Storage + Serialize + DeserializeOwned + Clone
+    S: Storage
 {
-    pub fn save(&self) -> color_eyre::Result<usize> {
-        match serde_json::to_vec(&self.persistent_state) {
+    pub fn save(&mut self) -> color_eyre::Result<usize> {
+        match serde_json::to_vec(self) {
             Ok(serialized_data) => {
                 Ok(self.storage.save(&serialized_data)?)
             },
@@ -125,19 +142,11 @@ where
             }
         }
     }
-    pub fn load(&self) -> color_eyre::Result<Self> {
+    pub fn load(&mut self) -> color_eyre::Result<Self> {
         match self.storage.load() {
             Ok(serialized_data) => {
-                let persistent_state: PersistentState = serde_json::from_slice(&serialized_data)?;
-
-                Ok(Self {
-                    persistent_state,
-                    metadata: self.metadata.clone(),
-                    cluster: self.cluster.clone(),
-                    volatile_state: self.volatile_state.clone(),
-                    election_state: self.election_state,
-                    storage: self.storage.clone()
-                })
+                let self_: Self = serde_json::from_slice(&serialized_data)?;
+                Ok(self_)
             },
             Err(e) => {
                 Err(e)
