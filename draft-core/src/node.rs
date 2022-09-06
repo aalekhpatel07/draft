@@ -2,7 +2,7 @@ use bytes::Bytes;
 use derive_builder::Builder;
 use hashbrown::HashMap;
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
 use crate::{Storage, FileStorageBackend, BufferBackend};
 

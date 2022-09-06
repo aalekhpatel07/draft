@@ -1,5 +1,5 @@
 use std::{path::{PathBuf, Path}, sync::{Arc, Mutex}, io::{Write, Read}};
-use serde::{Serialize, Deserialize};
+
 
 
 
@@ -112,7 +112,7 @@ where
 {
     fn save(&mut self, data: &[u8]) -> color_eyre::Result<usize> {
         let total_bytes = data.len();
-        self.write_all(&data)?;
+        self.write_all(data)?;
         Ok(total_bytes)
     }
     fn load(&mut self) -> color_eyre::Result<Vec<u8>> {

@@ -4,7 +4,7 @@ pub mod utils;
 
 pub use request_vote::*;
 pub use append_entries::*;
-use serde::{de::DeserializeOwned, Serialize};
+
 
 use tracing::{instrument, error};
 use crate::{node::RaftNode, Storage};
