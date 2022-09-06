@@ -126,9 +126,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{path::PathBuf, fmt::Debug};
+    use std::{fmt::Debug, path::PathBuf};
 
-    use crate::storage::{FileStorageBackend, BufferBackend};
+    use crate::storage::{BufferBackend, FileStorageBackend};
 
     #[test]
     fn default_node_has_log_path_configured() {
@@ -152,7 +152,7 @@ mod tests {
 
     fn save_works<S>()
     where
-        S: Storage + Debug
+        S: Storage + Debug,
     {
         let state = PersistentStateBuilder::default()
             .current_term(10)
@@ -178,5 +178,4 @@ mod tests {
     fn save_to_buffer_works() {
         save_works::<BufferBackend>();
     }
-
 }
