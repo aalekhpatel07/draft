@@ -182,8 +182,7 @@ mod tests {
             .build()
             .expect("Couldn't build persistent state with builder.");
 
-        let mut raft: RaftNode<FileStorageBackend> = RaftNode::default();
-        raft.persistent_state = state;
+        let mut raft: RaftNode<FileStorageBackend> = RaftNode::<FileStorageBackend> { persistent_state: state, ..Default::default()};
 
         raft.save().unwrap();
         let reloaded = raft.load().unwrap();
@@ -198,8 +197,7 @@ mod tests {
             .build()
             .expect("Couldn't build persistent state with builder.");
 
-        let mut raft: RaftNode<BufferBackend> = RaftNode::default();
-        raft.persistent_state = state;
+        let mut raft: RaftNode<FileStorageBackend> = RaftNode::<FileStorageBackend> { persistent_state: state, ..Default::default()};
 
         raft.save().unwrap();
         let reloaded = raft.load().unwrap();
