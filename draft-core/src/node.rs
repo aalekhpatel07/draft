@@ -4,7 +4,7 @@ use hashbrown::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Storage, FileStorageBackend, BufferBackend};
+use crate::{BufferBackend, FileStorageBackend, Storage};
 
 pub type Log = (usize, Bytes);
 pub type Port = u16;
@@ -19,24 +19,17 @@ impl Term for Log {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Builder, Eq, Serialize, Deserialize)]
 pub struct NodeMetadata {
     pub id: usize,
     pub port: Port,
 }
 
-impl Default for NodeMetadata 
-{
+impl Default for NodeMetadata {
     fn default() -> Self {
-
-        Self {
-            id: 0,
-            port: 8000,
-        }
+        Self { id: 0, port: 8000 }
     }
 }
-
 
 #[derive(Clone, Debug, Serialize, Deserialize, Builder, Default, PartialEq, Eq)]
 pub struct PersistentState {
@@ -71,19 +64,17 @@ impl Default for ElectionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RaftNode<S>
-{
+pub struct RaftNode<S> {
     pub metadata: NodeMetadata,
     pub cluster: HashMap<usize, NodeMetadata>,
     pub persistent_state: PersistentState,
     pub volatile_state: VolatileState,
     pub election_state: ElectionState,
     #[serde(skip)]
-    pub storage: S
+    pub storage: S,
 }
 
-impl Default for RaftNode<FileStorageBackend> 
-{
+impl Default for RaftNode<FileStorageBackend> {
     fn default() -> Self {
         Self {
             metadata: NodeMetadata::default(),
@@ -91,13 +82,12 @@ impl Default for RaftNode<FileStorageBackend>
             persistent_state: PersistentState::default(),
             volatile_state: VolatileState::default(),
             election_state: ElectionState::Follower,
-            storage: FileStorageBackend::new("/tmp/raft.d")
+            storage: FileStorageBackend::new("/tmp/raft.d"),
         }
     }
 }
 
-impl Default for RaftNode<BufferBackend>
-{
+impl Default for RaftNode<BufferBackend> {
     fn default() -> Self {
         Self {
             metadata: NodeMetadata::default(),
@@ -105,41 +95,35 @@ impl Default for RaftNode<BufferBackend>
             persistent_state: PersistentState::default(),
             volatile_state: VolatileState::default(),
             election_state: ElectionState::Follower,
-            storage: BufferBackend::new()
+            storage: BufferBackend::new(),
         }
     }
 }
 
 impl<S> PartialEq for RaftNode<S>
 where
-    S: Storage
+    S: Storage,
 {
     /// Exclude self.storage from equality check.
     fn eq(&self, other: &Self) -> bool {
-        self.metadata.eq(&other.metadata) &&
-        self.election_state.eq(&other.election_state) &&
-        self.persistent_state.eq(&other.persistent_state) &&
-        self.volatile_state.eq(&other.volatile_state) &&
-        self.cluster.eq(&other.cluster)
+        self.metadata.eq(&other.metadata)
+            && self.election_state.eq(&other.election_state)
+            && self.persistent_state.eq(&other.persistent_state)
+            && self.volatile_state.eq(&other.volatile_state)
+            && self.cluster.eq(&other.cluster)
     }
 }
 
-impl<S> Eq for RaftNode<S>
-where
-    S: Storage {}
+impl<S> Eq for RaftNode<S> where S: Storage {}
 
 impl<S> RaftNode<S>
 where
-    S: Storage
+    S: Storage,
 {
     pub fn save(&mut self) -> color_eyre::Result<usize> {
         match serde_json::to_vec(self) {
-            Ok(serialized_data) => {
-                Ok(self.storage.save(&serialized_data)?)
-            },
-            Err(e) => {
-                Err(e.into())
-            }
+            Ok(serialized_data) => Ok(self.storage.save(&serialized_data)?),
+            Err(e) => Err(e.into()),
         }
     }
     pub fn load(&mut self) -> color_eyre::Result<Self> {
@@ -147,30 +131,21 @@ where
             Ok(serialized_data) => {
                 let self_: Self = serde_json::from_slice(&serialized_data)?;
                 Ok(self_)
-            },
-            Err(e) => {
-                Err(e)
             }
+            Err(e) => Err(e),
         }
     }
 
     /// Determine whether all entries in our log have non-decreasing terms.
     #[cfg(test)]
     pub fn are_terms_non_decreasing(&self) -> bool {
-        self
-        .persistent_state
-        .log
-        .iter()
-        .zip(
-            self
-            .persistent_state
+        self.persistent_state
             .log
             .iter()
-            .skip(1)
-        )
-        .all(|(predecessor_entry, successor_entry)| {
-            successor_entry.term() >= predecessor_entry.term()
-        })
+            .zip(self.persistent_state.log.iter().skip(1))
+            .all(|(predecessor_entry, successor_entry)| {
+                successor_entry.term() >= predecessor_entry.term()
+            })
     }
 }
 
@@ -183,7 +158,6 @@ mod tests {
     fn default_node_has_log_path_configured() {
         let node: RaftNode<FileStorageBackend> = RaftNode::default();
         assert_eq!(node.storage.log_file_path, PathBuf::from("/tmp/raft.d"))
-
     }
     #[test]
     fn it_works() {

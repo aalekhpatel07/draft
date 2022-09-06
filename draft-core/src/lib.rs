@@ -1,7 +1,7 @@
 mod node;
 mod rpc;
-pub mod utils;
 mod storage;
+pub mod utils;
 
 pub use node::*;
 pub use rpc::*;
