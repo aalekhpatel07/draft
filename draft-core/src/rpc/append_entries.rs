@@ -18,6 +18,7 @@ pub struct AppendEntriesRequest {
 }
 
 impl AppendEntriesRequest {
+    #[inline(always)]
     pub fn is_heartbeat(&self) -> bool {
         self.entries.is_empty()
     }
@@ -61,24 +62,7 @@ pub enum AppendEntriesRPCError {
         self_previous_log_term: usize,
         latest_term: usize,
         requested_entries_len: usize,
-    },
-
-    #[error(
-        "The recipient node's ({self_id}) log contains some ({self_log_len}) entries but the leader ({requested_node_id}) requested without a tail to look for.
-         The latest term is ({latest_term}). The leader's commit_index is ({commit_index}).
-         The leader requested with ({requested_entries_len}) entries.
-        "
-    )]
-    LeaderHasRewindedExcessively {
-        self_id: usize,
-        requested_node_id: usize,
-        requested_previous_log_index: usize,
-        requested_previous_log_term: usize,
-        self_log_len: usize,
-        latest_term: usize,
-        commit_index: usize,
-        requested_entries_len: usize,
-    },
+    }
 }
 
 pub fn handle_append_entries<S>(

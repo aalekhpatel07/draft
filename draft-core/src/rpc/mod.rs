@@ -34,6 +34,15 @@ impl<S> TryRaftRPC for RaftNode<S>
 where
     S: Storage,
 {
+    /// Given a vote request RPC, process the request without making any modifications to the state
+    /// as described in Section 5.4.1 and Figure 3.
+    #[instrument(skip(self), target = "rpc::RequestVote")]
+    fn try_handle_request_vote(
+        &mut self,
+        request: VoteRequest,
+    ) -> Result<VoteResponse, RequestVoteRPCError> {
+        handle_request_vote(self, request)
+    }
     #[instrument(skip(self), target = "rpc::AppendEntries")]
     fn try_handle_append_entries(
         &mut self,
@@ -69,43 +78,12 @@ where
             },
         }
     }
-    /// Given a vote request RPC, process the request without making any modifications to the state
-    /// as described in Section 5.4.1 and Figure 3.
-    #[instrument(skip(self), target = "rpc::RequestVote")]
-    fn try_handle_request_vote(
-        &mut self,
-        request: VoteRequest,
-    ) -> Result<VoteResponse, RequestVoteRPCError> {
-        handle_request_vote(self, request)
-    }
 }
 
 impl<S> RaftRPC for RaftNode<S>
 where
     S: Storage,
 {
-    fn handle_append_entries(
-        &mut self,
-        request: AppendEntriesRequest,
-    ) -> color_eyre::Result<AppendEntriesResponse> {
-        let requested_term = request.term;
-        match handle_append_entries(self, request) {
-            Ok(response) => Ok(response),
-            Err(err) => match err {
-                AppendEntriesRPCError::NodeOutOfDate { latest_term, .. } => {
-                    Ok(AppendEntriesResponse {
-                        term: latest_term,
-                        success: false,
-                    })
-                }
-                _ => Ok(AppendEntriesResponse {
-                    term: requested_term,
-                    success: false,
-                }),
-            },
-        }
-    }
-
     fn handle_request_vote(&mut self, request: VoteRequest) -> color_eyre::Result<VoteResponse> {
         let candidate_id = request.candidate_id;
 
@@ -139,6 +117,28 @@ where
                 RequestVoteRPCError::NodeOutOfDate { latest_term, .. } => Ok(VoteResponse {
                     term: latest_term,
                     vote_granted: false,
+                }),
+            },
+        }
+    }
+
+    fn handle_append_entries(
+        &mut self,
+        request: AppendEntriesRequest,
+    ) -> color_eyre::Result<AppendEntriesResponse> {
+        let requested_term = request.term;
+        match handle_append_entries(self, request) {
+            Ok(response) => Ok(response),
+            Err(err) => match err {
+                AppendEntriesRPCError::NodeOutOfDate { latest_term, .. } => {
+                    Ok(AppendEntriesResponse {
+                        term: latest_term,
+                        success: false,
+                    })
+                }
+                _ => Ok(AppendEntriesResponse {
+                    term: requested_term,
+                    success: false,
                 }),
             },
         }
