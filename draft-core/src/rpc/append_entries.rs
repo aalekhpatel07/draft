@@ -81,107 +81,6 @@ pub enum AppendEntriesRPCError {
     },
 }
 
-// pub fn handle_heartbeat(
-//     receiver_node: &RaftNode,
-//     request: AppendEntriesRequest
-// ) -> Result<AppendEntriesResponse, AppendEntriesRPCError>
-// {
-//     if receiver_node.persistent_state.log.is_empty() {
-//         // We have an empty log.
-
-//         if request.previous_log_index == 0 {
-//             // So does the leader.
-//             return Ok(AppendEntriesResponse { term: request.term, success: true })
-//         }
-
-//         // Leader has some entries in the log
-//         // but no new entries for us to commit.
-
-//         // This may happen if we were in the minority
-//         // of nodes that failed to replicate some of the logs
-//         // at some point in the past. Now, the leader claims
-//         // it has some entries but we don't have anything in our local log.
-//         // This is a log inconsistency and we let the leader know
-//         // of it. The leader will retry later. (Section 5.3)
-
-//         // Eventually, the leader will realize we need the full log,
-//         // in which case, we'll get some new entries to append and
-//         // we'll live happily ever after. (umm, probably?)
-
-//         return Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry {
-//             self_id: receiver_node.metadata.id,
-//             requested_node_id: request.leader_id,
-//             requested_previous_log_index: request.previous_log_index,
-//             requested_previous_log_term: request.previous_log_term,
-//             self_previous_log_index: 0, // because our log is empty in this case.
-//             self_previous_log_term: 0, // this is irrelevant if our log is empty.
-//             latest_term: request.term,
-//             requested_entries_len: request.entries.len()
-//         })
-//     }
-
-//     // We have some entries in our log. Must check what exists at that index.
-
-//     if request.previous_log_index == 0 {
-//         // Leader has been lagging behind.
-//         // Claims to have no tail to append to.
-
-//         // Likely an inconsistent state.
-//         // Leader has rewinded more than necessary.
-//         return Err(AppendEntriesRPCError::LeaderHasRewindedExcessively {
-//             self_id: receiver_node.metadata.id,
-//             requested_node_id: request.leader_id,
-//             requested_previous_log_index: 0,
-//             requested_previous_log_term: 0,
-//             self_log_len: receiver_node.persistent_state.log.len(),
-//             latest_term: request.term,
-//             commit_index: request.leader_commit_index,
-//             requested_entries_len: request.entries.len()
-//         });
-//     }
-
-//     // First normalize the indices to 0-based.
-//     let requested_previous_log_index = request.previous_log_index - 1;
-
-//     // What's the term of the entry in our log at this index?
-//     match receiver_node.persistent_state.log.get(requested_previous_log_index)
-//     {
-//         Some((self_previous_log_term, _)) => {
-//             // We do have some entry at that index.
-//             if *self_previous_log_term != request.previous_log_term {
-//                 // Different terms so a log inconsistency. (Section 5.3)
-//                 return Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry {
-//                     self_id: receiver_node.metadata.id,
-//                     requested_node_id: request.leader_id,
-//                     requested_previous_log_index: request.previous_log_index,
-//                     requested_previous_log_term: request.previous_log_term,
-//                     self_previous_log_index: request.previous_log_index,
-//                     self_previous_log_term: *self_previous_log_term,
-//                     latest_term: request.term,
-//                     requested_entries_len: request.entries.len()
-//                 });
-//             }
-//         },
-//         None => {
-//             // Leader points to a tail that we don't have.
-//             // This is a log inconsistency.
-//             return Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry {
-//                 self_id: receiver_node.metadata.id,
-//                 requested_node_id: request.leader_id,
-//                 requested_previous_log_index: request.previous_log_index,
-//                 requested_previous_log_term: request.previous_log_term,
-//                 self_previous_log_index: request.previous_log_index, // doesn't matter because we don't have that entry.
-//                 self_previous_log_term: 0,
-//                 latest_term: request.term,
-//                 requested_entries_len: request.entries.len()
-//             });
-//         }
-//     }
-
-//     // Heartbeat won't mutate any state so we can return here.
-//     return Ok(AppendEntriesResponse { term: request.term, success: true });
-// }
-
 pub fn handle_append_entries<S>(
     receiver_node: &mut RaftNode<S>,
     request: AppendEntriesRequest,
@@ -549,4 +448,114 @@ pub mod tests {
         persistent_state(8, Some(1), vec![1, 1, 1, 4, 4, 5, 5, 6, 6, 6]),
         volatile_state(3, 0, None, None)
     );
+    append_entries_test!(
+        /// Suppose a leader is in term 2 and has entries with terms \[1, 1, 1, 2, 2\] in its log.
+        /// Also it guarantees that no entries are committed, i.e. commit_index = 0.
+        /// At the same time suppose a follower already has an empty log, and was in term 1.
+        /// 
+        /// The leader requests the follower to append all its log entries at a non-existent but trivial tail
+        /// of the empty log. Since the follower identifies the trivial case for a tail, it appends all the entries.
+        /// Thus the RPC succeeds and the follower's log has 5 new entries but its commit index remains unchanged,
+        /// since the leader provided no such guarantee of committance for these log entries. The follower acknowledges
+        /// the latest term and updates its current_term.
+        append_entry_works_the_first_time,
+        persistent_state(1, Some(1), vec![]),
+        volatile_state(0, 0, None, None),
+        append_entries_request(2, 1, 0, 0, vec![1, 1, 1, 2, 2], 0),
+        Ok(AppendEntriesResponse {
+            term: 2,
+            success: true
+        }),
+        persistent_state(2, Some(1), vec![1, 1, 1, 2, 2]),
+        volatile_state(0, 0, None, None)
+    );
+    append_entries_test!(
+        /// Suppose a leader is in term 2 and has entries with terms \[1, 1, 1, 2, 2\] in its log.
+        /// Also it guarantees that the first two entries are committed, i.e. commit_index = 2.
+        /// At the same time suppose a follower already has an empty log, and was in term 1.
+        /// 
+        /// The leader requests the follower to append all its log entries at a tail (1-based index: 2, term: 1).
+        /// It does not bump its committed index even though the leader shared that information.
+        /// Since the follower has no such tail entry, (i.e. it has 0 entries), it rejects the RPC.
+        /// The follower acknowledges the latest term and updates its current_term.
+        append_entry_fails_if_follower_lags_significantly_behind_the_leader,
+        persistent_state(1, Some(1), vec![]),
+        volatile_state(0, 0, None, None),
+        append_entries_request(2, 1, 2, 1, vec![1, 1, 1, 2, 2], 2),
+        Err(AppendEntriesRPCError::RecipientHasNoMatchingLogEntry {
+            requested_previous_log_index: 2,
+            requested_previous_log_term: 1,
+            self_previous_log_index: 0,
+            self_previous_log_term: 0,
+            latest_term: 2,
+            requested_entries_len: 5,
+            ..
+        }),
+        persistent_state(2, Some(1), vec![]),
+        volatile_state(0, 0, None, None)
+    );
+
+    append_entries_test!(
+        /// Suppose a leader is in term 3 and has entries with terms \[1, 1, 2, 2\] in its log.
+        /// Also it guarantees that the first two entries are committed, i.e. commit_index = 2.
+        /// At the same time suppose a follower already has entries \[1, 1, 1, 1, 1\] in its log, and is in term 1.
+        /// 
+        /// The leader requests the follower to append entries \[2, 2\] at a tail (1-based index: 2, term: 1). 
+        /// Since the follower has a tail at (1-based index: 2, term: 1), it notices that the requested entries \[2, 2\]
+        /// are different from what it has stored in its log (\[1, 1, 1\]) right after this tail. This causes a conflict
+        /// in the log entries and the follower truncates its log to \[1, 1\] before further processing. Then it appends
+        /// the requested entries (\[2 ,2 \]) to its log to turn it into (\[1, 1, 2, 2\]).
+        /// 
+        /// The RPC succeeds and the follower's log has 4 entries and it acknowledges new commit index and terms,
+        append_entry_works_if_terms_conflict_right_after_tail_entry,
+        persistent_state(1, Some(1), vec![1, 1, 1, 1, 1]),
+        volatile_state(0, 0, None, None),
+        append_entries_request(3, 1, 2, 1, vec![2, 2], 2),
+        Ok(AppendEntriesResponse {
+            term: 3,
+            success: true
+        }),
+        persistent_state(3, Some(1), vec![1, 1, 2, 2]),
+        volatile_state(2, 0, None, None)
+    );
+    append_entries_test!(
+        /// Suppose a leader is in term 3 and has entries with terms \[1, 1, 2, 2, 2\] in its log.
+        /// Also it guarantees that the first two entries are committed, i.e. commit_index = 2.
+        /// At the same time suppose a follower already has entries \[1, 1, 2, 2, 2, 2\] in its log, and is in term 2.
+        /// 
+        /// The leader requests the follower to append entries \[2, 2\] at a tail (1-based index: 2, term: 1). 
+        /// Since the follower has a tail at (1-based index: 2, term: 1), it notices that the requested entries \[2, 2, 2\]
+        /// are a subarray of what it has stored in its log (\[2, 2, 2, 2\]) right after this tail. This implies that the follower
+        /// has more entries than it should have and it rectifies that by dropping the last entry from its stored log.
+        /// 
+        /// Finally, the follower's log becomes \[1, 1, 2, 2, 2\] and it gets in sync with the leader's log.
+        /// The RPC succeeds and the follower's log has 5 entries and it acknowledges new commit index.
+        append_entry_works_if_requested_entries_are_subarray_of_stored_log,
+        persistent_state(1, Some(1), vec![1, 1, 2, 2, 2, 2]),
+        volatile_state(0, 0, None, None),
+        append_entries_request(3, 1, 2, 1, vec![2, 2, 2], 2),
+        Ok(AppendEntriesResponse {
+            term: 3,
+            success: true
+        }),
+        persistent_state(3, Some(1), vec![1, 1, 2, 2, 2]),
+        volatile_state(2, 0, None, None)
+    );
+
+    append_entries_test!(
+        /// Suppose a leader is in term 1 and has entries with terms \[1, 1\] in its log.
+        /// Also it guarantees that the first entry has been committed, i.e. commit_index = 1.
+        /// At the same time suppose a follower has an empty log, and is in term 1.
+        append_entries_works_and_commit_index_updated_upon_leader_guarantee,
+        persistent_state(1, Some(1), vec![]),
+        volatile_state(0, 0, None, None),
+        append_entries_request(1, 1, 0, 0, vec![1, 1], 1),
+        Ok(AppendEntriesResponse {
+            term: 1,
+            success: true
+        }),
+        persistent_state(1, Some(1), vec![1, 1]),
+        volatile_state(1, 0, None, None)
+    );
+
 }
