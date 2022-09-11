@@ -62,7 +62,7 @@ pub enum AppendEntriesRPCError {
         self_previous_log_term: usize,
         latest_term: usize,
         requested_entries_len: usize,
-    }
+    },
 }
 
 pub fn handle_append_entries<S>(
@@ -436,7 +436,7 @@ pub mod tests {
         /// Suppose a leader is in term 2 and has entries with terms \[1, 1, 1, 2, 2\] in its log.
         /// Also it guarantees that no entries are committed, i.e. commit_index = 0.
         /// At the same time suppose a follower already has an empty log, and was in term 1.
-        /// 
+        ///
         /// The leader requests the follower to append all its log entries at a non-existent but trivial tail
         /// of the empty log. Since the follower identifies the trivial case for a tail, it appends all the entries.
         /// Thus the RPC succeeds and the follower's log has 5 new entries but its commit index remains unchanged,
@@ -457,7 +457,7 @@ pub mod tests {
         /// Suppose a leader is in term 2 and has entries with terms \[1, 1, 1, 2, 2\] in its log.
         /// Also it guarantees that the first two entries are committed, i.e. commit_index = 2.
         /// At the same time suppose a follower already has an empty log, and was in term 1.
-        /// 
+        ///
         /// The leader requests the follower to append all its log entries at a tail (1-based index: 2, term: 1).
         /// It does not bump its committed index even though the leader shared that information.
         /// Since the follower has no such tail entry, (i.e. it has 0 entries), it rejects the RPC.
@@ -483,13 +483,13 @@ pub mod tests {
         /// Suppose a leader is in term 3 and has entries with terms \[1, 1, 2, 2\] in its log.
         /// Also it guarantees that the first two entries are committed, i.e. commit_index = 2.
         /// At the same time suppose a follower already has entries \[1, 1, 1, 1, 1\] in its log, and is in term 1.
-        /// 
-        /// The leader requests the follower to append entries \[2, 2\] at a tail (1-based index: 2, term: 1). 
+        ///
+        /// The leader requests the follower to append entries \[2, 2\] at a tail (1-based index: 2, term: 1).
         /// Since the follower has a tail at (1-based index: 2, term: 1), it notices that the requested entries \[2, 2\]
         /// are different from what it has stored in its log (\[1, 1, 1\]) right after this tail. This causes a conflict
         /// in the log entries and the follower truncates its log to \[1, 1\] before further processing. Then it appends
         /// the requested entries (\[2 ,2 \]) to its log to turn it into (\[1, 1, 2, 2\]).
-        /// 
+        ///
         /// The RPC succeeds and the follower's log has 4 entries and it acknowledges new commit index and terms,
         append_entry_works_if_terms_conflict_right_after_tail_entry,
         persistent_state(1, Some(1), vec![1, 1, 1, 1, 1]),
@@ -506,12 +506,12 @@ pub mod tests {
         /// Suppose a leader is in term 3 and has entries with terms \[1, 1, 2, 2, 2\] in its log.
         /// Also it guarantees that the first two entries are committed, i.e. commit_index = 2.
         /// At the same time suppose a follower already has entries \[1, 1, 2, 2, 2, 2\] in its log, and is in term 2.
-        /// 
-        /// The leader requests the follower to append entries \[2, 2\] at a tail (1-based index: 2, term: 1). 
+        ///
+        /// The leader requests the follower to append entries \[2, 2\] at a tail (1-based index: 2, term: 1).
         /// Since the follower has a tail at (1-based index: 2, term: 1), it notices that the requested entries \[2, 2, 2\]
         /// are a subarray of what it has stored in its log (\[2, 2, 2, 2\]) right after this tail. This implies that the follower
         /// has more entries than it should have and it rectifies that by dropping the last entry from its stored log.
-        /// 
+        ///
         /// Finally, the follower's log becomes \[1, 1, 2, 2, 2\] and it gets in sync with the leader's log.
         /// The RPC succeeds and the follower's log has 5 entries and it acknowledges new commit index.
         append_entry_works_if_requested_entries_are_subarray_of_stored_log,
@@ -541,5 +541,4 @@ pub mod tests {
         persistent_state(1, Some(1), vec![1, 1]),
         volatile_state(1, 0, None, None)
     );
-
 }
