@@ -3,6 +3,6 @@
 cargo \
 	tarpaulin \
 	-o Html \
-	--output-dir /var/www/html/draft-tarpaulin \
+	--output-dir target/tarpaulin \
 	--all-features \
 	--rustflags="-C opt-level=0"
