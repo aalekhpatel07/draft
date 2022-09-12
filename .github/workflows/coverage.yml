@@ -20,7 +20,7 @@ jobs:
       - name: Run tarpaulin
         uses: actions-rs/tarpaulin@v0.1
         with:
-          version: '0.15.0'
+          version: '0.20.0'
           args: '-o xml --output-dir target/tarpaulin --all-features --rustflags="-C opt-level=0"'
       - uses: codecov/codecov-action@v3
         with:
