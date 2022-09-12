@@ -5,7 +5,7 @@ pub mod utils;
 pub use append_entries::*;
 pub use request_vote::*;
 
-use crate::{node::RaftNode, Storage};
+use crate::{node::RaftNode, Storage, Network};
 use tracing::{error, instrument};
 
 /// Whoever implements this trait must propagate any errors that occur during the RPC call.
@@ -30,9 +30,10 @@ pub trait RaftRPC {
     ) -> color_eyre::Result<AppendEntriesResponse>;
 }
 
-impl<S> TryRaftRPC for RaftNode<S>
+impl<S, N> TryRaftRPC for RaftNode<S, N>
 where
     S: Storage,
+    N: Network
 {
     /// Given a vote request RPC, process the request without making any modifications to the state
     /// as described in Section 5.4.1 and Figure 3.
@@ -80,9 +81,10 @@ where
     }
 }
 
-impl<S> RaftRPC for RaftNode<S>
+impl<S, N> RaftRPC for RaftNode<S, N>
 where
     S: Storage,
+    N: Network
 {
     fn handle_request_vote(&mut self, request: VoteRequest) -> color_eyre::Result<VoteResponse> {
         let candidate_id = request.candidate_id;

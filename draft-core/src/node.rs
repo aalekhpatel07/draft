@@ -1,3 +1,6 @@
+use std::net::SocketAddr;
+use std::path::Path;
+
 use bytes::Bytes;
 use derive_builder::Builder;
 use hashbrown::HashMap;
@@ -5,9 +8,12 @@ use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::storage::Storage;
+use crate::network::Network;
+use crate::config::{RaftConfig, load_from_file};
 
 pub type Log = (usize, Bytes);
 pub type Port = u16;
+pub type Cluster = HashMap<usize, NodeMetadata>;
 
 pub trait Term {
     fn term(&self) -> usize;
@@ -22,12 +28,12 @@ impl Term for Log {
 #[derive(Debug, Clone, PartialEq, Builder, Eq, Serialize, Deserialize)]
 pub struct NodeMetadata {
     pub id: usize,
-    pub port: Port,
+    pub addr: SocketAddr,
 }
 
 impl Default for NodeMetadata {
     fn default() -> Self {
-        Self { id: 0, port: 8000 }
+        Self { id: 0, addr: "192.168.0.1:8000".parse().unwrap() }
     }
 }
 
@@ -64,7 +70,7 @@ impl Default for ElectionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RaftNode<S> {
+pub struct RaftNode<S, N> {
     pub metadata: NodeMetadata,
     pub cluster: HashMap<usize, NodeMetadata>,
     pub persistent_state: PersistentState,
@@ -72,11 +78,14 @@ pub struct RaftNode<S> {
     pub election_state: ElectionState,
     #[serde(skip)]
     pub storage: S,
+    #[serde(skip)]
+    pub network: N
 }
 
-impl<S> PartialEq for RaftNode<S>
+impl<S, N> PartialEq for RaftNode<S, N>
 where
     S: Storage,
+    N: Network
 {
     /// Exclude self.storage from equality check.
     fn eq(&self, other: &Self) -> bool {
@@ -88,11 +97,12 @@ where
     }
 }
 
-impl<S> Eq for RaftNode<S> where S: Storage {}
+impl<S, N> Eq for RaftNode<S, N> where S: Storage, N: Network {}
 
-impl<S> RaftNode<S>
+impl<S, N> RaftNode<S, N>
 where
     S: Storage,
+    N: Network + Default
 {
     pub fn save(&mut self) -> color_eyre::Result<usize> {
         match serde_json::to_vec(self) {
@@ -121,18 +131,114 @@ where
                 successor_entry.term() >= predecessor_entry.term()
             })
     }
+
+    pub fn with_config<P>(mut self, path_to_config: P) -> Self 
+    where
+        P: AsRef<Path>
+    {
+        let config = load_from_file(path_to_config).expect("Failed to load from config file.");
+
+        self.metadata.id = config.server.id;
+        self.metadata.addr = config.server.addr;
+
+        self.cluster = HashMap::new();
+        
+        for node_metadata in config.peers.iter() {
+            self.cluster.insert(node_metadata.id, node_metadata.clone());
+        }
+
+        self.network = N::from(config);
+
+        self
+    } 
+
+    pub fn new() -> Self {
+        Self::default().with_config("/etc/raftd/raftd.toml")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+    use std::net::TcpListener;
     use std::{fmt::Debug, path::PathBuf};
 
+    use crate::TcpBackend;
     use crate::storage::{BufferBackend, FileStorageBackend};
+    use crate::network::{DummyBackend as DummyNetworkBackend};
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn setup_server() {
+        INIT.call_once(|| {
+            start_tcp_server_on_port("127.0.0.1:9001".parse().unwrap())
+        });
+    }
+
+    fn start_tcp_server_on_port(addr: SocketAddr) {
+        let listener = TcpListener::bind(addr).unwrap();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(mut stream) => {
+                        std::thread::spawn(move || {
+                            let mut s: String = String::new();
+                            stream.read_to_string(&mut s).unwrap();
+                            println!("{:#?}", s);
+                            s.clear();
+                        });
+                    },
+                    Err(_) => {}
+                }
+            }
+        });
+
+        // while match listener.accept() {
+        //     Ok((mut socket, _addr)) => {
+        //         std::thread::spawn(move || {
+        //             let mut buffer = Vec::new();
+        //             socket.read_to_end(&mut buffer).unwrap();
+        //             print!("{:#?}", buffer);
+        //         });
+        //     },
+        //     Err(_err) => {}
+        // }
+        // {}
+    }
+
 
     #[test]
+    fn new_works() {
+        setup_server();
+        let node: RaftNode<BufferBackend, DummyNetworkBackend> = RaftNode::new();
+        
+        assert_eq!(node.metadata.addr, "127.0.0.1:9000".parse().unwrap());
+        assert_eq!(node.metadata.id, 1);
+
+        let mut hmap = HashMap::new();
+
+        hmap.insert(2, NodeMetadata { id: 2, addr: "127.0.0.1:9001".parse().unwrap()});
+        hmap.insert(3, NodeMetadata { id: 3, addr: "127.0.0.1:9002".parse().unwrap()});
+
+        assert_eq!(node.cluster, hmap);
+    }
+
+    #[test]
+    fn connect_works() {
+        setup_server();
+        let node: RaftNode<BufferBackend, TcpBackend> = RaftNode::new();
+        assert!(node.cluster.contains_key(&2));
+        node.network.connect(2).expect("Couldn't connect to node with id 2.");
+        let data = "Hello raft!\n".as_bytes();
+        node.network.write(2, &data).expect("Failed to write.");
+
+    }
+    #[test]
     fn default_node_has_log_path_configured() {
-        let node: RaftNode<FileStorageBackend> = RaftNode::default();
+        let node: RaftNode<FileStorageBackend, DummyNetworkBackend> = RaftNode::default();
         assert_eq!(node.storage.log_file_path, PathBuf::from("/tmp/raft.d"))
     }
     #[test]
@@ -150,9 +256,10 @@ mod tests {
         assert_eq!(state.voted_for, None);
     }
 
-    fn save_works<S>()
+    fn save_works<S, N>()
     where
         S: Storage + Debug,
+        N: Network + Debug
     {
         let state = PersistentStateBuilder::default()
             .current_term(10)
@@ -160,7 +267,7 @@ mod tests {
             .build()
             .expect("Couldn't build persistent state with builder.");
 
-        let mut raft: RaftNode<S> = RaftNode::<S> {
+        let mut raft: RaftNode<S, N> = RaftNode::<S, N> {
             persistent_state: state,
             ..Default::default()
         };
@@ -172,10 +279,10 @@ mod tests {
 
     #[test]
     fn save_to_disk_works() {
-        save_works::<FileStorageBackend>();
+        save_works::<FileStorageBackend, DummyNetworkBackend>();
     }
     #[test]
     fn save_to_buffer_works() {
-        save_works::<BufferBackend>();
+        save_works::<BufferBackend, DummyNetworkBackend>();
     }
 }

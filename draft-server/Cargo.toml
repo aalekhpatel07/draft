@@ -14,7 +14,5 @@ anyhow = { version = "*" }
 rmp-serde = { version = "*" }
 serde = { version = "*", features = ["derive"] }
 
-libhoney-rust = { version = "0.1.6" }
 tracing = { version = "*" }
 tracing-subscriber = { version = "0.3.1" }
-tracing-honeycomb = { version = "0.4.3" }

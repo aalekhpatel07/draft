@@ -4,18 +4,7 @@ use tracing::{instrument, error, info};
 use std::net::SocketAddr;
 use anyhow::Result;
 use draft_server::{RPCSenderChannels, setup_logging};
-use tracing_honeycomb::{current_dist_trace_ctx, register_dist_tracing_root, TraceId};
 
-
-#[instrument]
-fn do_something(msg: &str) {
-    register_dist_tracing_root(TraceId::new(), None).expect("Failed to register dist tracing root");
-    let (trace_id, span_id) = current_dist_trace_ctx().expect("Failed to get current dist trace context");
-    info!("trace_id: {}, span_id: {}", trace_id, span_id);
-    
-
-    info!("Logging: {:#?}", msg);
-}
 
 async fn create_tcp_server(addr: SocketAddr, rpc_filter_channel_sender: UnboundedSender<Vec<u8>>) {
     let server = TcpListener::bind(addr).await.expect("Failed to bind to address");
@@ -54,7 +43,6 @@ async fn classify_rpc(
 async fn main() -> Result<()>{
     setup_logging();
 
-
     let (rpc_filter_channel_tx, rpc_filter_channel_rx) = mpsc::unbounded_channel();
 
     let (append_entries_tx, mut append_entries_rx) = mpsc::unbounded_channel();
@@ -81,13 +69,11 @@ async fn main() -> Result<()>{
     let f1 = tokio::spawn(async move {
         while let Some(request) = append_entries_rx.recv().await {
             // tracing::info!("Received AppendEntriesRequest: {:#?}", request);
-            do_something(&format!("{:#?}", request));
         }
     });
     let f2 = tokio::spawn(async move {
         while let Some(request) = vote_rx.recv().await {
             // tracing::info!("Received VoteRequest: {:#?}", request);
-            do_something(&format!("{:#?}", request));
         }
     });
 
