@@ -53,6 +53,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(not(tarpaulin))]
     pub fn config_from_file() {
         let path = "/etc/raftd/raftd.toml";
         let config = load_from_file(path).unwrap();

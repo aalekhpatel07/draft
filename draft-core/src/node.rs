@@ -211,6 +211,7 @@ mod tests {
 
 
     #[test]
+    #[cfg(not(tarpaulin))]
     fn new_works() {
         setup_server();
         let node: RaftNode<BufferBackend, DummyNetworkBackend> = RaftNode::new();
@@ -227,6 +228,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(tarpaulin))]
     fn connect_works() {
         setup_server();
         let node: RaftNode<BufferBackend, TcpBackend> = RaftNode::new();

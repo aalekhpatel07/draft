@@ -18,10 +18,6 @@ jobs:
         with:
           toolchain: stable
           override: true
-      - name: Copy the config to /etc.
-        run: |
-          mkdir -p /etc/raftd/ && \
-          cp config.sample.toml /etc/raftd/raftd.toml
       - name: Run tarpaulin
         uses: actions-rs/tarpaulin@v0.1
         with:
