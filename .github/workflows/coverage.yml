@@ -9,6 +9,7 @@ jobs:
         # os: [ubuntu-latest, macos-latest, windows-latest]
     env:
       OS: ${{ matrix.os }}
+      RUSTFLAGS: "-C opt-level=0"
     steps:
       - name: Checkout repository.
         uses: actions/checkout@v2
@@ -21,7 +22,7 @@ jobs:
         uses: actions-rs/tarpaulin@v0.1
         with:
           version: '0.20.0'
-          args: '-o xml --output-dir target/tarpaulin --all-features --rustflags="-C opt-level=0"'
+          args: '-o xml --output-dir target/tarpaulin --all-features'
       - uses: codecov/codecov-action@v3
         with:
           token: $ {{ secrets.CODECOV_TOKEN }}
