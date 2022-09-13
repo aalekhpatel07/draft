@@ -1,32 +1,30 @@
 // use std::net::TcpStream;
 
-use futures::{channel::{mpsc, oneshot}, io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt}};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::{mpsc, oneshot};
+use tokio::{runtime};
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use std::io::{BufWriter, BufReader, Write, Read};
+use std::net::SocketAddr;
 use crate::node::{NodeMetadata, Cluster, RaftNode};
 use crate::config::RaftConfig;
 use async_trait::async_trait;
-use std::{net::{SocketAddr, TcpStream}, io::Error};
 use hashbrown::HashMap;
 use color_eyre::eyre::eyre;
-use std::sync::{RwLock, Mutex};
+use std::sync::Arc;
+use tokio::net::{UdpSocket};
+use bytes::{Bytes, BytesMut};
 
-// use std::net::{TcpStream};
-// #[derive(Error, Debug)]
-// pub enum NetworkError {
-//     #[error(
-//         ""
-//     )]
-//     UnderlyingConnectionError
-// }
 
-impl From<RaftConfig> for TcpBackend {
+impl From<RaftConfig> for UdpBackend {
     fn from(config: RaftConfig) -> Self {
         let mut cluster: Cluster = HashMap::new();
         for peer in config.peers.iter() {
             cluster.insert(peer.id, peer.clone());
         }
-        Self::new(&cluster)
+        let rt = runtime::Builder::new_current_thread().build().expect("Couldn't build a tokio runtime.");
+        let result = rt.block_on(Self::new(&cluster, &config.server)).expect("Couldn't run UdpBackend::new");
+        result
     }
 }
 
@@ -42,150 +40,225 @@ impl From<RaftConfig> for DummyBackend {
 }
 
 #[async_trait]
-pub trait Network: Default + From<RaftConfig> {
-    async fn send_single_rpc<Request: Send + Serialize + DeserializeOwned, Response: Send + Serialize + DeserializeOwned>(&self, node_id: usize, rpc: Request) -> color_eyre::Result<oneshot::Receiver<Response>>;
-    async fn broadcast_rpc<Request: Send + Serialize + DeserializeOwned, Response: Send + Serialize + DeserializeOwned>(&self, rpc_channel: mpsc::UnboundedSender<(usize, Request)>) -> color_eyre::Result<mpsc::UnboundedReceiver<Response>>;
+pub trait Network: From<RaftConfig> + Default {
+    async fn send_rpc<Request: Send + Serialize + DeserializeOwned>(
+        &self, 
+        node_id: usize, 
+        rpc: Request
+    ) -> color_eyre::Result<()>;
+    async fn broadcast_rpc<Request: Send + Serialize + DeserializeOwned, Response: Send + Serialize + DeserializeOwned>(
+        &self, 
+        rpc_channel: mpsc::UnboundedReceiver<(usize, Request)>
+    ) -> color_eyre::Result<()>;
+    async fn run(&mut self) -> color_eyre::Result<()>;
 }
-
-pub type KindaConcurrentHashMap<K, V> = RwLock<hashbrown::HashMap<K, Mutex<V>>>;
-pub type TcpStreamNodeMap = KindaConcurrentHashMap<usize, TcpStream>;
 
 #[derive(Debug)]
-/// For now, don't worry about optimizing connections.
-/// We'll just shoot new TCPs for every RPC.
-/// Eventually we'll try to cache the connection.
-pub struct TcpBackend {
-    pub cluster: Cluster,
-    pub streams: TcpStreamNodeMap
-}
+pub struct UdpBackend {
+    cluster: Arc<Cluster>,
+    server: Arc<NodeMetadata>,
+    socket: Arc<Option<UdpSocket>>,
+    peer_from_socket: Arc<HashMap<SocketAddr, usize>>,
 
-#[derive(Debug, Clone)]
-pub struct HttpBackend {
+    /// Represents an rpc for the given node with given data.
+    rpc_request_sender: UnboundedSender<(usize, Bytes)>,
+    rpc_request_receiver: UnboundedReceiver<(usize, Bytes)>,
 
+    rpc_response_sender: UnboundedSender<(usize, Bytes)>,
+    rpc_response_receiver: UnboundedReceiver<(usize, Bytes)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct DummyBackend {}
 
-impl TcpBackend {
-    pub fn new(cluster: &Cluster) -> Self {
-        Self {
-            cluster: cluster.clone(),
-            streams: RwLock::new(HashMap::default())
+impl UdpBackend {
+
+    pub async fn new(cluster: &Cluster, server: &NodeMetadata) -> color_eyre::Result<Self> {
+
+        let socket = UdpSocket::bind(server.addr).await?;
+
+        let (tx1, rx1) = mpsc::unbounded_channel();
+        let (tx2, rx2) = mpsc::unbounded_channel();
+
+        let mut peer_from_socket = HashMap::new();
+
+        for (&peer_id, peer_metadata) in cluster.iter() {
+            peer_from_socket.insert(peer_metadata.addr, peer_id);
         }
+
+        Ok(Self {
+            cluster: Arc::new(cluster.clone()),
+            server: Arc::new(server.clone()),
+            socket: Arc::new(Some(socket)),
+            peer_from_socket: Arc::new(peer_from_socket),
+            rpc_request_sender: tx1,
+            rpc_request_receiver: rx1,
+            rpc_response_sender: tx2,
+            rpc_response_receiver: rx2,
+        })
     }
 
-    pub fn connect(&self, node_id: usize) -> color_eyre::Result<()> 
-    {
-        if self.streams.read().unwrap().contains_key(&node_id) {
-            return Ok(());
+    #[inline(always)]
+    pub fn check_socket(&self) -> color_eyre::Result<()>{
+        if (&*self.socket).is_none() {
+            return Err(eyre!("No socket bound for self."));
         }
-        if !self.cluster.contains_key(&node_id) {
-            return Err(eyre!("No key found in cluster?"))
-        }
+        Ok(())
+    }
 
-        let node_metadata = 
+    pub async fn send_to(&self, node_id: usize, data: Bytes) -> Result<usize, std::io::Error> {
+        let socket = (&*self.socket).as_ref().expect("Socket is None.");
+        
+        let peer_metadata = 
         self
         .cluster
         .get(&node_id)
         .expect(&format!("No node with given id: {}", node_id));
-        
-        let value = TcpStream::connect(node_metadata.addr)?;
-        
-        self
-        .streams
-        .write()
-        .unwrap()
-        .entry(node_id)
-        .or_insert(Mutex::new(value));
+
+        socket.send_to(&data.to_vec(), peer_metadata.addr).await
+    }
+
+    pub async fn send_loop(&mut self) -> color_eyre::Result<()> {
+        self.check_socket()?;
+
+        for (node_id, rpc_request) in self.rpc_request_receiver.recv().await {
+            match self.send_to(node_id, rpc_request).await {
+                Ok(bytes_written) => {
+                    tracing::trace!("Bytes written: {}", bytes_written);
+                },
+                Err(e) => {
+                    tracing::error!(error=%e);
+                }
+            }
+        }
+
         Ok(())
     }
 
-    pub fn read(&self, node_id: usize, buffer: &mut [u8]) -> Result<usize, std::io::Error> {
+    pub async fn run(&mut self) -> color_eyre::Result<()> {
 
-        let streams = self.streams.read().unwrap();
+        // TODO: Fix this.
+        tokio::spawn(async move {
+            for (node_id, rpc_request) in self.rpc_request_receiver.recv().await {
+                match self.send_to(node_id, rpc_request).await {
+                    Ok(bytes_written) => {
+                        tracing::trace!("Bytes written: {}", bytes_written);
+                    },
+                    Err(e) => {
+                        tracing::error!(error=%e);
+                    }
+                }
+            }
+        });
 
-        let mut stream = 
-        streams
-        .get(&node_id)
-        .unwrap()
-        .lock()
-        .unwrap();
+        // tokio::spawn(async {
+        //     Self::send_loop(&mut self).await;
+        // });
 
-        stream.read(buffer)
-    }
-    pub fn write(&self, node_id: usize, buffer: &[u8]) -> Result<usize, std::io::Error> {
+        // tokio::spawn(async {
+        //     Self::recv_loop(&self).await
+        // });
 
-        let streams = self.streams.read().unwrap();
+        // // tokio::spawn(async move {
+        // //     self.send_loop().await;
+        // // });
 
-        let mut stream = 
-        streams
-        .get(&node_id)
-        .unwrap()
-        .lock()
-        .unwrap();
-        stream.write(buffer)
-    }
-    // pub fn get(&self, node_id: usize) -> color_eyre::Result<(SocketAddr, u16)> {
-    //     if let Some(value) = self.cluster.get(&node_id) {
-    //         Ok((value.addr, value.port))
-    //     } else {
-    //         Err(eyre!("Given node_id not found in cluster."))
-    //         .with_suggestion(|| "Try specifying a node_id that exists in the cluster. Note that we won't have our own id in the cluster.")
-    //     }
-    // }
+        // self.recv_loop().await;
 
-    // pub async fn read(&self, node_id: usize, buf: &mut [u8]) -> core::result::Result<usize, std::io::Error> {
-    //     self
-    //     .streams
-    //     .get(&node_id)
-    //     .map(|conn| {
-    //         conn.read_buf(buf)
-    //     }).expect("No such connection.")
-    // }
+        // tokio::spawn(async move {
+        //         self.recv_loop() => {
 
-    // pub fn write(&self, node_id: usize)
+        //         },
+        //         _ = self.send_loop() => {
 
-
-    // pub fn send_message(&self, node_id: usize, buffer: &[u8]) -> color_eyre::Result<Vec<u8>> {
-    //     let (mut addr, port) = self.get(node_id)?;
-    //     addr.set_port(port);
-
-    //     let mut connection = TcpStream::connect(addr)
-    //         .map(|stream| TcpConnection::new(&stream))?;
+        //         }
+        //     }
+            // ;
+            // self.send_loop();
         
-    //     connection.writer.write_all(buffer)?;
-    //     let mut response_buffer = Vec::new();
-    //     let response = connection.reader.read_to_end(&mut response_buffer);
-    //     let bytes_written = response.unwrap();
-    //     Ok(response_buffer)
-    // }
 
+        // tokio::spawn(async move {
+        //     (&self).recv_loop().await.expect("Receive loop failed.");
+        // });
+        // tokio::spawn(async move {
+        //     self.send_loop().await.expect("Send loop failed.");
+        // });
+
+        Ok(())
+    }
+
+    pub async fn recv_loop(&self) -> Result<(), std::io::Error> {
+
+        let socket = UdpSocket::bind(self.server.addr).await?;
+        let mut buffer = [0; 2048];
+
+        loop {
+            let (len, addr) = socket.recv_from(&mut buffer).await?;
+            // Assume one message fills in the buffer completely.
+            tracing::trace!("{:?} bytes sent from {:?}", len, addr);
+            match self.peer_from_socket.get(&addr) {
+                Some(peer_id) => {
+                    let data = buffer[..len].to_vec();
+                    if let Err(e) = 
+                        self
+                        .rpc_response_sender
+                        .send((*peer_id, Bytes::from(data))) {
+                        tracing::error!(receive_loop_error=%e);
+                    }
+                },
+                None => {
+                    // We received a packet from someone outside our cluster. Just ignore it.
+                }
+            }
+        }
+
+    }
 }
 
 #[async_trait]
-impl Network for TcpBackend {
-    async fn send_single_rpc<Request: Send + Serialize + DeserializeOwned, Response: Send + Serialize + DeserializeOwned>(
+impl Network for UdpBackend {
+    async fn send_rpc<Request: Send + Serialize + DeserializeOwned>(
         &self, 
         node_id: usize, 
         rpc: Request
-    ) -> color_eyre::Result<oneshot::Receiver<Response>> 
+    ) -> color_eyre::Result<()>
     {
-        todo!("To implement")
+        if let Err(e) = self.rpc_request_sender.send((node_id, serde_json::to_vec(&rpc)?.into())) {
+            tracing::error!(error_sending_rpc=%e);
+        }
+
+        Ok(())
     }
-    async fn broadcast_rpc<Request: Send + Serialize + DeserializeOwned, Response: Send + Serialize + DeserializeOwned>(&self, rpc_channel: mpsc::UnboundedSender<(usize, Request)>) -> color_eyre::Result<mpsc::UnboundedReceiver<Response>> {
-        todo!("To implement")
+
+    async fn broadcast_rpc<Request: Send + Serialize + DeserializeOwned, Response: Send + Serialize + DeserializeOwned>(
+        &self, 
+        mut rpc_channel: mpsc::UnboundedReceiver<(usize, Request)>
+    ) -> color_eyre::Result<()> {
+
+        for (peer_id, rpc) in rpc_channel.recv().await {
+            self.send_rpc(peer_id, rpc).await?;
+        }
+
+        Ok(())
+
+    }
+
+    async fn run(&mut self) -> color_eyre::Result<()> {
+        UdpBackend::run(self).await
     }
 }
 
 
 #[async_trait]
 impl Network for DummyBackend {
-    async fn send_single_rpc<Request: Send, Response: Send>(&self, node_id: usize, rpc: Request) -> color_eyre::Result<oneshot::Receiver<Response>> {
+    async fn send_rpc<Request: Send>(&self, node_id: usize, rpc: Request) -> color_eyre::Result<()> {
         todo!("To implement")
     }
-    async fn broadcast_rpc<Request: Send, Response: Send>(&self, rpc_channel: mpsc::UnboundedSender<(usize, Request)>) -> color_eyre::Result<mpsc::UnboundedReceiver<Response>> {
+    async fn broadcast_rpc<Request: Send, Response: Send>(&self, rpc_channel: mpsc::UnboundedReceiver<(usize, Request)>) -> color_eyre::Result<()> {
         todo!("To implement")
+    }
+    async fn run(&mut self) -> color_eyre::Result<()> {
+        todo!("To implement");
     }
 }
 
@@ -195,11 +268,20 @@ impl Default for DummyBackend {
     }
 }
 
-impl Default for TcpBackend {
+impl Default for UdpBackend {
     fn default() -> Self {
+        let (tx1, rx1) = mpsc::unbounded_channel();
+        let (tx2, rx2) = mpsc::unbounded_channel();
+
         Self {
-            cluster: hashbrown::HashMap::default(),
-            streams: RwLock::new(HashMap::default())
+            cluster: Arc::new(HashMap::new()),
+            server: Arc::new(NodeMetadata::default()),
+            peer_from_socket: Arc::new(HashMap::new()),
+            socket: Arc::new(None),
+            rpc_request_sender: tx1,
+            rpc_request_receiver: rx1,
+            rpc_response_sender: tx2,
+            rpc_response_receiver: rx2
         }
     }
 }

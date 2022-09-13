@@ -31,5 +31,5 @@ derivative = "2.2.0"
 itertools = "0.10.3"
 serde_json = "1.0.85"
 rand = "0.8.5"
-futures = "0.3.24"
 toml = "0.5.9"
+tokio = { version = "*", features = ["net", "sync", "rt"]}
