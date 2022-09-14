@@ -8,7 +8,6 @@ use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::storage::Storage;
-use crate::network::Network;
 use crate::config::{RaftConfig, load_from_file};
 
 pub type Log = (usize, Bytes);
@@ -70,7 +69,7 @@ impl Default for ElectionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RaftNode<S, N> {
+pub struct RaftNode<S> {
     pub metadata: NodeMetadata,
     pub cluster: HashMap<usize, NodeMetadata>,
     pub persistent_state: PersistentState,
@@ -78,14 +77,11 @@ pub struct RaftNode<S, N> {
     pub election_state: ElectionState,
     #[serde(skip)]
     pub storage: S,
-    #[serde(skip)]
-    pub network: N
 }
 
-impl<S, N> PartialEq for RaftNode<S, N>
+impl<S> PartialEq for RaftNode<S>
 where
-    S: Storage,
-    N: Network
+    S: Storage
 {
     /// Exclude self.storage from equality check.
     fn eq(&self, other: &Self) -> bool {
@@ -97,12 +93,11 @@ where
     }
 }
 
-impl<S, N> Eq for RaftNode<S, N> where S: Storage, N: Network {}
+impl<S> Eq for RaftNode<S> where S: Storage {}
 
-impl<S, N> RaftNode<S, N>
+impl<S> RaftNode<S>
 where
     S: Storage,
-    N: Network + Default
 {
     pub fn save(&mut self) -> color_eyre::Result<usize> {
         match serde_json::to_vec(self) {
@@ -118,10 +113,6 @@ where
             }
             Err(e) => Err(e),
         }
-    }
-
-    pub async fn run(&mut self) -> color_eyre::Result<()> {
-        self.network.run().await
     }
 
     /// Determine whether all entries in our log have non-decreasing terms.
@@ -151,8 +142,6 @@ where
             self.cluster.insert(node_metadata.id, node_metadata.clone());
         }
 
-        self.network = N::from(config);
-
         self
     } 
 
@@ -168,9 +157,9 @@ mod tests {
     use std::net::TcpListener;
     use std::{fmt::Debug, path::PathBuf};
 
-    use crate::UdpBackend;
+    // use crate::UdpBackend;
     use crate::storage::{BufferBackend, FileStorageBackend};
-    use crate::network::{DummyBackend as DummyNetworkBackend};
+    // use crate::network::{DummyBackend as DummyNetworkBackend};
     use std::sync::Once;
 
     static INIT: Once = Once::new();
@@ -218,7 +207,7 @@ mod tests {
     #[cfg(not(tarpaulin))]
     fn new_works() {
         setup_server();
-        let node: RaftNode<BufferBackend, DummyNetworkBackend> = RaftNode::new();
+        let node: RaftNode<BufferBackend> = RaftNode::new();
         
         assert_eq!(node.metadata.addr, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(node.metadata.id, 1);
@@ -242,7 +231,7 @@ mod tests {
     // }
     #[test]
     fn default_node_has_log_path_configured() {
-        let node: RaftNode<FileStorageBackend, DummyNetworkBackend> = RaftNode::default();
+        let node: RaftNode<FileStorageBackend> = RaftNode::default();
         assert_eq!(node.storage.log_file_path, PathBuf::from("/tmp/raft.d"))
     }
     #[test]
@@ -260,10 +249,9 @@ mod tests {
         assert_eq!(state.voted_for, None);
     }
 
-    fn save_works<S, N>()
+    fn save_works<S>()
     where
         S: Storage + Debug,
-        N: Network + Debug
     {
         let state = PersistentStateBuilder::default()
             .current_term(10)
@@ -271,7 +259,7 @@ mod tests {
             .build()
             .expect("Couldn't build persistent state with builder.");
 
-        let mut raft: RaftNode<S, N> = RaftNode::<S, N> {
+        let mut raft: RaftNode<S> = RaftNode::<S> {
             persistent_state: state,
             ..Default::default()
         };
@@ -283,10 +271,10 @@ mod tests {
 
     #[test]
     fn save_to_disk_works() {
-        save_works::<FileStorageBackend, DummyNetworkBackend>();
+        save_works::<FileStorageBackend>();
     }
     #[test]
     fn save_to_buffer_works() {
-        save_works::<BufferBackend, DummyNetworkBackend>();
+        save_works::<BufferBackend>();
     }
 }

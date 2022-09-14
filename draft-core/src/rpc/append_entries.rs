@@ -65,8 +65,8 @@ pub enum AppendEntriesRPCError {
     },
 }
 
-pub fn handle_append_entries<S, N>(
-    receiver_node: &mut RaftNode<S, N>,
+pub fn handle_append_entries<S>(
+    receiver_node: &mut RaftNode<S>,
     request: AppendEntriesRequest,
 ) -> Result<AppendEntriesResponse, AppendEntriesRPCError> {
     if request.term < receiver_node.persistent_state.current_term {
@@ -286,7 +286,6 @@ pub fn handle_append_entries<S, N>(
 pub mod tests {
     pub use super::*;
     pub use crate::*;
-    pub use crate::network::{DummyBackend as DummyNetworkBackend};
 
     #[allow(unused_imports)]
     pub use crate::rpc::utils::*;
@@ -306,7 +305,7 @@ pub mod tests {
             #[test]
             pub fn $func_name() {
                 utils::set_up_logging();
-                let mut receiver_raft: RaftNode<BufferBackend, DummyNetworkBackend> = RaftNode::default();
+                let mut receiver_raft: RaftNode<BufferBackend> = RaftNode::default();
 
                 receiver_raft.persistent_state = $initial_persistent_state;
                 receiver_raft.volatile_state = $initial_volatile_state;

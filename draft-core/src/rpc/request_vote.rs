@@ -75,8 +75,8 @@ pub enum RequestVoteRPCError {
 
 /// Given a vote request RPC, process the request without making any modifications to the state
 /// as described in Section 5.4.1 and Figure 3.
-pub fn handle_request_vote<S, N>(
-    receiver_node: &RaftNode<S, N>,
+pub fn handle_request_vote<S>(
+    receiver_node: &RaftNode<S>,
     request: VoteRequest,
 ) -> Result<VoteResponse, RequestVoteRPCError> {
     if request.term < receiver_node.persistent_state.current_term {
@@ -178,7 +178,6 @@ pub fn handle_request_vote<S, N>(
 mod tests {
     pub use super::*;
     pub use crate::*;
-    pub use crate::network::{DummyBackend as DummyNetworkBackend};
     #[allow(unused_imports)]
     pub use crate::rpc::utils::*;
 
@@ -194,7 +193,7 @@ mod tests {
             #[test]
             pub fn $func_name() {
                 utils::set_up_logging();
-                let mut receiver_raft: RaftNode<BufferBackend, DummyNetworkBackend> = RaftNode::default();
+                let mut receiver_raft: RaftNode<BufferBackend> = RaftNode::default();
                 receiver_raft.persistent_state = $initial_persistent_state;
                 assert!(receiver_raft.are_terms_non_decreasing());
                 let request: VoteRequest = $request;

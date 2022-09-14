@@ -16,3 +16,4 @@ serde = { version = "*", features = ["derive"] }
 
 tracing = { version = "*" }
 tracing-subscriber = { version = "0.3.1" }
+hashbrown = "0.12.3"

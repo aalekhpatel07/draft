@@ -1,4 +1,5 @@
 mod utils;
+pub mod network;
 pub use utils::*;
 
 use draft_core::{AppendEntriesRequest, VoteRequest};
@@ -11,5 +12,5 @@ pub struct RPCSenderChannels {
 }
 
 pub fn setup_logging() {
-
+    
 }
