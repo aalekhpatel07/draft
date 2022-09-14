@@ -34,7 +34,7 @@ pub struct NodeMetadata {
 
 impl Default for NodeMetadata {
     fn default() -> Self {
-        Self { id: 0, addr: "192.168.0.1:8000".parse().unwrap() }
+        Self { id: 1, addr: "127.0.0.1:9000".parse().unwrap() }
     }
 }
 
@@ -74,12 +74,42 @@ impl Default for ElectionState {
 pub struct RaftNode<S> {
     pub metadata: NodeMetadata,
     pub cluster: HashMap<usize, NodeMetadata>,
+    #[serde(with = "arc_mutex_serde")]
     pub persistent_state: Shared<PersistentState>,
+    #[serde(with = "arc_mutex_serde")]
     pub volatile_state: Shared<VolatileState>,
+    #[serde(with = "arc_mutex_serde")]
     pub election_state: Shared<ElectionState>,
     #[serde(skip)]
     pub storage: S,
 }
+
+/// Delegate ser/de to the data inside ArcMutex.
+/// 
+/// Inspired from:
+/// https://users.rust-lang.org/t/how-to-serialize-deserialize-an-async-std-rwlock-t-where-t-serialize-deserialize/37407/2
+mod arc_mutex_serde {
+    use serde::{Deserialize, Serialize};
+    use serde::de::Deserializer;
+    use serde::ser::Serializer;
+    use std::sync::{Arc, Mutex};
+
+    pub fn serialize<S, T>(val: &Arc<Mutex<T>>, s: S) -> Result<S::Ok, S::Error>
+        where S: Serializer,
+              T: Serialize,
+    {
+        T::serialize(&*val.lock().unwrap(), s)
+    }
+
+    pub fn deserialize<'de, D, T>(d: D) -> Result<Arc<Mutex<T>>, D::Error>
+        where D: Deserializer<'de>,
+              T: Deserialize<'de>,
+    {
+        Ok(Arc::new(Mutex::new(T::deserialize(d)?)))
+    }
+}
+
+
 
 impl<S> PartialEq for RaftNode<S>
 where
@@ -269,6 +299,7 @@ mod tests {
 
         raft.save().unwrap();
         let reloaded = raft.load().unwrap();
+        println!("{reloaded:#?}");
         assert_eq!(reloaded, raft);
     }
 

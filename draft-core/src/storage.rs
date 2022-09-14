@@ -1,5 +1,5 @@
 use std::{
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -111,19 +111,3 @@ impl Storage for FileStorageBackend {
         Ok(std::fs::read(self.log_file_path.clone())?)
     }
 }
-
-// impl<IOBackend> Storage for IOBackend
-// where
-//     IOBackend: Read + Write + Default,
-// {
-//     fn save(&self, data: &[u8]) -> color_eyre::Result<usize> {
-//         let total_bytes = data.len();
-//         self.write_all(data)?;
-//         Ok(total_bytes)
-//     }
-//     fn load(&self) -> color_eyre::Result<Vec<u8>> {
-//         let mut buf = Vec::new();
-//         self.read_to_end(&mut buf)?;
-//         Ok(buf)
-//     }
-// }
