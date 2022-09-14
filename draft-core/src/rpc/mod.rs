@@ -32,7 +32,7 @@ pub trait RaftRPC {
 
 impl<S> TryRaftRPC for RaftNode<S>
 where
-    S: Storage
+    S: Storage,
 {
     /// Given a vote request RPC, process the request without making any modifications to the state
     /// as described in Section 5.4.1 and Figure 3.
@@ -41,28 +41,31 @@ where
         &self,
         request: VoteRequest,
     ) -> Result<VoteResponse, RequestVoteRPCError> {
-        
         let candidate_id = request.candidate_id;
         let requested_term = request.term;
         match handle_request_vote(self, request) {
             Ok(response) => {
                 // The rpc was handled correctly as expected.
                 // We must grant vote now.
-                let mut persistent_state_guard = self.persistent_state.lock().expect("Failed to lock persistent state");
+                let mut persistent_state_guard = self
+                    .persistent_state
+                    .lock()
+                    .expect("Failed to lock persistent state");
                 persistent_state_guard.voted_for = Some(candidate_id);
                 persistent_state_guard.current_term = response.term;
                 drop(persistent_state_guard);
 
-                    if let Err(e) = self.save() {
-                        error!("{}", e.to_string());
-                    }
+                if let Err(e) = self.save() {
+                    error!("{}", e.to_string());
+                }
                 Ok(response)
-            },
+            }
             Err(err) => match err {
-
                 RequestVoteRPCError::NodeOutOfDate { latest_term, .. } => {
-
-                    let mut persistent_state_guard = self.persistent_state.lock().expect("Failed to lock persistent state");
+                    let mut persistent_state_guard = self
+                        .persistent_state
+                        .lock()
+                        .expect("Failed to lock persistent state");
                     persistent_state_guard.current_term = latest_term;
                     drop(persistent_state_guard);
 
@@ -70,10 +73,12 @@ where
                         error!("{}", e.to_string());
                     }
                     Err(err)
-                },
+                }
                 e => {
-                    
-                    let mut persistent_state_guard = self.persistent_state.lock().expect("Failed to lock persistent state");
+                    let mut persistent_state_guard = self
+                        .persistent_state
+                        .lock()
+                        .expect("Failed to lock persistent state");
                     persistent_state_guard.current_term = requested_term;
                     drop(persistent_state_guard);
 
@@ -83,7 +88,7 @@ where
 
                     Err(e)
                 }
-            }
+            },
         }
     }
     #[instrument(skip(self), target = "rpc::AppendEntries")]
@@ -94,12 +99,15 @@ where
         let requested_term = request.term;
 
         let res = handle_append_entries(self, request);
-        let mut persistent_state_guard = self.persistent_state.lock().expect("Failed to lock persistent state.");
+        let mut persistent_state_guard = self
+            .persistent_state
+            .lock()
+            .expect("Failed to lock persistent state.");
 
         match res {
             Ok(result) => {
                 persistent_state_guard.current_term = result.term;
-                // NOTE: 
+                // NOTE:
                 // Maybe serde holds the lock when serializing the PersistentState.
                 // Not dropping it before self.save() causes a deadlock.
                 drop(persistent_state_guard);
@@ -112,7 +120,7 @@ where
             Err(err) => match err {
                 AppendEntriesRPCError::NodeOutOfDate { latest_term, .. } => {
                     persistent_state_guard.current_term = latest_term;
-                    // NOTE: 
+                    // NOTE:
                     // Maybe serde holds the lock when serializing the PersistentState.
                     // Not dropping it before self.save() causes a deadlock.
                     drop(persistent_state_guard);
@@ -124,7 +132,7 @@ where
                 }
                 e => {
                     persistent_state_guard.current_term = requested_term;
-                    // NOTE: 
+                    // NOTE:
                     // Maybe serde holds the lock when serializing the PersistentState.
                     // Not dropping it before self.save() causes a deadlock.
                     drop(persistent_state_guard);
@@ -141,7 +149,7 @@ where
 
 impl<S> RaftRPC for RaftNode<S>
 where
-    S: Storage
+    S: Storage,
 {
     fn handle_request_vote(&self, request: VoteRequest) -> color_eyre::Result<VoteResponse> {
         let requested_term = request.term;
@@ -149,12 +157,14 @@ where
         match self.try_handle_request_vote(request) {
             Ok(response) => Ok(response),
             Err(err) => match err {
-                RequestVoteRPCError::NodeOutOfDate { latest_term, .. } => 
-                    Ok(VoteResponse {
-                        term: latest_term,
-                        vote_granted: false,
-                    }),
-                _ => Ok(VoteResponse { term: requested_term, vote_granted: false })
+                RequestVoteRPCError::NodeOutOfDate { latest_term, .. } => Ok(VoteResponse {
+                    term: latest_term,
+                    vote_granted: false,
+                }),
+                _ => Ok(VoteResponse {
+                    term: requested_term,
+                    vote_granted: false,
+                }),
             },
         }
     }
@@ -167,11 +177,12 @@ where
         match handle_append_entries(self, request) {
             Ok(response) => Ok(response),
             Err(err) => match err {
-                AppendEntriesRPCError::NodeOutOfDate { latest_term, .. } =>
+                AppendEntriesRPCError::NodeOutOfDate { latest_term, .. } => {
                     Ok(AppendEntriesResponse {
                         term: latest_term,
                         success: false,
-                    }),
+                    })
+                }
                 _ => Ok(AppendEntriesResponse {
                     term: requested_term,
                     success: false,

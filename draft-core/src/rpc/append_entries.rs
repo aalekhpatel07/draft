@@ -69,7 +69,10 @@ pub fn handle_append_entries<S>(
     receiver_node: &RaftNode<S>,
     request: AppendEntriesRequest,
 ) -> Result<AppendEntriesResponse, AppendEntriesRPCError> {
-    let mut persistent_state_guard = receiver_node.persistent_state.lock().expect("Couldn't lock persistent state.");
+    let mut persistent_state_guard = receiver_node
+        .persistent_state
+        .lock()
+        .expect("Couldn't lock persistent state.");
 
     if request.term < persistent_state_guard.current_term {
         // The candidate is straight up out-of-date.
@@ -103,7 +106,10 @@ pub fn handle_append_entries<S>(
             // guarantees to have committed.
             let last_new_entry_index = persistent_state_guard.log.len();
 
-            let mut volatile_state_guard = receiver_node.volatile_state.lock().expect("Failed to lock volatile state");
+            let mut volatile_state_guard = receiver_node
+                .volatile_state
+                .lock()
+                .expect("Failed to lock volatile state");
 
             if request.leader_commit_index > volatile_state_guard.commit_index {
                 volatile_state_guard.commit_index =
@@ -142,7 +148,6 @@ pub fn handle_append_entries<S>(
         });
     }
 
-
     // We have some entries in our local log.
     // Do we have one at the specified index though?
 
@@ -172,8 +177,7 @@ pub fn handle_append_entries<S>(
     // the tail entry.
     // If request.previous_log_index is 0, it means no tail entry exists
     // and we must start from the first entry.
-    let stored_entries_terms = 
-        persistent_state_guard
+    let stored_entries_terms = persistent_state_guard
         .log
         .iter()
         .skip(request.previous_log_index) // Start at the given tail entry.
@@ -238,8 +242,7 @@ pub fn handle_append_entries<S>(
             // We need to remove all stored entries including and following (previous_log_index + index).
             let index_to_drain_local_log_from = request.previous_log_index + index_to_remove_from;
 
-            let removed_count =
-                persistent_state_guard
+            let removed_count = persistent_state_guard
                 .log
                 .drain(index_to_drain_local_log_from..)
                 .count();
@@ -259,7 +262,7 @@ pub fn handle_append_entries<S>(
 
     // Either we need to remove an extra suffix from our log,
     if let Some(index_of_suffix_to_remove) = should_remove_stored_entries_from {
-            persistent_state_guard
+        persistent_state_guard
             .log
             .drain(index_of_suffix_to_remove..);
     }
@@ -267,17 +270,19 @@ pub fn handle_append_entries<S>(
     // Or we may append a suffix from the requested entries.
     if let Some(index_to_extend_from) = should_extend_remaining_entries_from {
         persistent_state_guard
-        .log
-        .extend_from_slice(request.entries.get(index_to_extend_from..).unwrap());
+            .log
+            .extend_from_slice(request.entries.get(index_to_extend_from..).unwrap());
     }
 
     // Update our commit index to include our newly updated entries which the leader
     // guarantees to have committed.
     let last_new_entry_index = persistent_state_guard.log.len();
-    let mut volatile_state_guard = receiver_node.volatile_state.lock().expect("Failed to lock volatile state");
+    let mut volatile_state_guard = receiver_node
+        .volatile_state
+        .lock()
+        .expect("Failed to lock volatile state");
     if request.leader_commit_index > volatile_state_guard.commit_index {
-        volatile_state_guard.commit_index =
-            request.leader_commit_index.min(last_new_entry_index)
+        volatile_state_guard.commit_index = request.leader_commit_index.min(last_new_entry_index)
     }
 
     Ok(AppendEntriesResponse {

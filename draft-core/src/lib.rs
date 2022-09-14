@@ -1,8 +1,8 @@
+pub mod config;
 mod node;
 mod rpc;
 mod storage;
 pub mod utils;
-pub mod config;
 
 pub use node::*;
 pub use rpc::*;

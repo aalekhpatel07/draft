@@ -79,7 +79,10 @@ pub fn handle_request_vote<S>(
     receiver_node: &RaftNode<S>,
     request: VoteRequest,
 ) -> Result<VoteResponse, RequestVoteRPCError> {
-    let persistent_state_guard = receiver_node.persistent_state.lock().expect("Failed to lock persistent state");
+    let persistent_state_guard = receiver_node
+        .persistent_state
+        .lock()
+        .expect("Failed to lock persistent state");
 
     if request.term < persistent_state_guard.current_term {
         // The candidate is straight up out-of-date.
