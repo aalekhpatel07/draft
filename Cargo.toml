@@ -3,3 +3,11 @@ members = [
 	"draft-core",
 	"draft-server",
 ]
+
+[profile.release]
+lto = "fat"
+debug = true
+
+
+[profile.dev.package.backtrace]
+opt-level = 3

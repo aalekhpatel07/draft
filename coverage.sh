@@ -5,4 +5,5 @@ cargo \
 	-o Html \
 	--output-dir target/tarpaulin \
 	--all-features \
-	--rustflags="-C opt-level=0"
+	--rustflags="-C opt-level=0" \
+	$@

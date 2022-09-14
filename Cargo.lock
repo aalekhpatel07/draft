@@ -237,10 +237,12 @@ name = "draft-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "color-eyre",
  "draft-core",
  "hashbrown",
  "hyper",
+ "rand",
  "rmp-serde",
  "serde",
  "tokio",
