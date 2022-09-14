@@ -1,4 +1,5 @@
 mod utils;
+mod network;
 pub use utils::*;
 
 use draft_core::{AppendEntriesRequest, VoteRequest};
