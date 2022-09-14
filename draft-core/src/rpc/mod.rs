@@ -69,10 +69,7 @@ where
                     if let Err(e) = self.save() {
                         error!("{}", e.to_string());
                     }
-                    Ok(VoteResponse {
-                        term: latest_term,
-                        vote_granted: false,
-                    })
+                    Err(err)
                 },
                 e => {
                     
