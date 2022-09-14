@@ -24,7 +24,7 @@ impl AppendEntriesRequest {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppendEntriesResponse {
     pub term: usize,
     pub success: bool,
