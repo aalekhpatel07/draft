@@ -99,8 +99,8 @@ use draft_server::network::RaftServer;
 use draft_core::*;
 use tokio::sync::mpsc;
 use hashbrown::HashMap;
-use tracing::{info, Level};
-use tracing_subscriber;
+use tracing::{Level};
+
 
 
 #[tokio::main]
@@ -113,8 +113,8 @@ pub async fn main() -> color_eyre::Result<()> {
 
     // let node: RaftNode<BufferBackend> = RaftNode::default();
 
-    let (rpc_request_sender, rpc_request_receiver) = mpsc::unbounded_channel();
-    let (rpc_response_sender, mut rpc_response_receiver) = mpsc::unbounded_channel();
+    let (_rpc_request_sender, rpc_request_receiver) = mpsc::unbounded_channel();
+    let (rpc_response_sender, _rpc_response_receiver) = mpsc::unbounded_channel();
 
     let config = draft_core::config::RaftConfig::default();
 

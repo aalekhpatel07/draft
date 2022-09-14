@@ -9,7 +9,7 @@ use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::storage::Storage;
-use crate::config::{RaftConfig, load_from_file};
+use crate::config::{load_from_file};
 
 pub type Log = (usize, Bytes);
 pub type Port = u16;
