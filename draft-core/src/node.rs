@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use derive_builder::Builder;
@@ -7,12 +8,13 @@ use hashbrown::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::load_from_file;
 use crate::storage::Storage;
-use crate::config::{RaftConfig, load_from_file};
 
 pub type Log = (usize, Bytes);
 pub type Port = u16;
 pub type Cluster = HashMap<usize, NodeMetadata>;
+pub type Shared<T> = Arc<Mutex<T>>;
 
 pub trait Term {
     fn term(&self) -> usize;
@@ -32,7 +34,10 @@ pub struct NodeMetadata {
 
 impl Default for NodeMetadata {
     fn default() -> Self {
-        Self { id: 0, addr: "192.168.0.1:8000".parse().unwrap() }
+        Self {
+            id: 1,
+            addr: "127.0.0.1:9000".parse().unwrap(),
+        }
     }
 }
 
@@ -72,23 +77,74 @@ impl Default for ElectionState {
 pub struct RaftNode<S> {
     pub metadata: NodeMetadata,
     pub cluster: HashMap<usize, NodeMetadata>,
-    pub persistent_state: PersistentState,
-    pub volatile_state: VolatileState,
-    pub election_state: ElectionState,
+    #[serde(with = "arc_mutex_serde")]
+    pub persistent_state: Shared<PersistentState>,
+    #[serde(with = "arc_mutex_serde")]
+    pub volatile_state: Shared<VolatileState>,
+    #[serde(with = "arc_mutex_serde")]
+    pub election_state: Shared<ElectionState>,
     #[serde(skip)]
     pub storage: S,
 }
 
+/// Delegate ser/de to the data inside ArcMutex.
+///
+/// Inspired from:
+/// https://users.rust-lang.org/t/how-to-serialize-deserialize-an-async-std-rwlock-t-where-t-serialize-deserialize/37407/2
+mod arc_mutex_serde {
+    use serde::de::Deserializer;
+    use serde::ser::Serializer;
+    use serde::{Deserialize, Serialize};
+    use std::sync::{Arc, Mutex};
+
+    pub fn serialize<S, T>(val: &Arc<Mutex<T>>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        T: Serialize,
+    {
+        T::serialize(&*val.lock().unwrap(), s)
+    }
+
+    pub fn deserialize<'de, D, T>(d: D) -> Result<Arc<Mutex<T>>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        Ok(Arc::new(Mutex::new(T::deserialize(d)?)))
+    }
+}
+
 impl<S> PartialEq for RaftNode<S>
 where
-    S: Storage
+    S: Storage,
 {
     /// Exclude self.storage from equality check.
     fn eq(&self, other: &Self) -> bool {
         self.metadata.eq(&other.metadata)
-            && self.election_state.eq(&other.election_state)
-            && self.persistent_state.eq(&other.persistent_state)
-            && self.volatile_state.eq(&other.volatile_state)
+            && self
+                .election_state
+                .lock()
+                .expect("Couldn't lock own election state.")
+                .eq(&other
+                    .election_state
+                    .lock()
+                    .expect("Couldn't lock other's election state."))
+            && self
+                .persistent_state
+                .lock()
+                .expect("Couldn't lock own persistent state.")
+                .eq(&other
+                    .persistent_state
+                    .lock()
+                    .expect("Couldn't lock other's persistent state."))
+            && self
+                .volatile_state
+                .lock()
+                .expect("Couldn't lock own volatile state.")
+                .eq(&other
+                    .volatile_state
+                    .lock()
+                    .expect("Couldn't lock other's volatile state."))
             && self.cluster.eq(&other.cluster)
     }
 }
@@ -99,7 +155,7 @@ impl<S> RaftNode<S>
 where
     S: Storage,
 {
-    pub fn save(&mut self) -> color_eyre::Result<usize> {
+    pub fn save(&self) -> color_eyre::Result<usize> {
         match serde_json::to_vec(self) {
             Ok(serialized_data) => Ok(self.storage.save(&serialized_data)?),
             Err(e) => Err(e.into()),
@@ -118,18 +174,20 @@ where
     /// Determine whether all entries in our log have non-decreasing terms.
     #[cfg(test)]
     pub fn are_terms_non_decreasing(&self) -> bool {
-        self.persistent_state
-            .log
-            .iter()
-            .zip(self.persistent_state.log.iter().skip(1))
-            .all(|(predecessor_entry, successor_entry)| {
+        let guard = self
+            .persistent_state
+            .lock()
+            .expect("Failed to lock persistent state");
+        guard.log.iter().zip(guard.log.iter().skip(1)).all(
+            |(predecessor_entry, successor_entry)| {
                 successor_entry.term() >= predecessor_entry.term()
-            })
+            },
+        )
     }
 
-    pub fn with_config<P>(mut self, path_to_config: P) -> Self 
+    pub fn with_config<P>(mut self, path_to_config: P) -> Self
     where
-        P: AsRef<Path>
+        P: AsRef<Path>,
     {
         let config = load_from_file(path_to_config).expect("Failed to load from config file.");
 
@@ -137,13 +195,13 @@ where
         self.metadata.addr = config.server.addr;
 
         self.cluster = HashMap::new();
-        
+
         for node_metadata in config.peers.iter() {
             self.cluster.insert(node_metadata.id, node_metadata.clone());
         }
 
         self
-    } 
+    }
 
     pub fn new() -> Self {
         Self::default().with_config("/etc/raftd/raftd.toml")
@@ -165,9 +223,7 @@ mod tests {
     static INIT: Once = Once::new();
 
     fn setup_server() {
-        INIT.call_once(|| {
-            start_tcp_server_on_port("127.0.0.1:9001".parse().unwrap())
-        });
+        INIT.call_once(|| start_tcp_server_on_port("127.0.0.1:9001".parse().unwrap()));
     }
 
     fn start_tcp_server_on_port(addr: SocketAddr) {
@@ -183,7 +239,7 @@ mod tests {
                             println!("{:#?}", s);
                             s.clear();
                         });
-                    },
+                    }
                     Err(_) => {}
                 }
             }
@@ -202,20 +258,31 @@ mod tests {
         // {}
     }
 
-
     #[test]
     #[cfg(not(tarpaulin))]
     fn new_works() {
         setup_server();
         let node: RaftNode<BufferBackend> = RaftNode::new();
-        
+
         assert_eq!(node.metadata.addr, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(node.metadata.id, 1);
 
         let mut hmap = HashMap::new();
 
-        hmap.insert(2, NodeMetadata { id: 2, addr: "127.0.0.1:9001".parse().unwrap()});
-        hmap.insert(3, NodeMetadata { id: 3, addr: "127.0.0.1:9002".parse().unwrap()});
+        hmap.insert(
+            2,
+            NodeMetadata {
+                id: 2,
+                addr: "127.0.0.1:9001".parse().unwrap(),
+            },
+        );
+        hmap.insert(
+            3,
+            NodeMetadata {
+                id: 3,
+                addr: "127.0.0.1:9002".parse().unwrap(),
+            },
+        );
 
         assert_eq!(node.cluster, hmap);
     }
@@ -260,12 +327,13 @@ mod tests {
             .expect("Couldn't build persistent state with builder.");
 
         let mut raft: RaftNode<S> = RaftNode::<S> {
-            persistent_state: state,
+            persistent_state: Arc::new(Mutex::new(state)),
             ..Default::default()
         };
 
         raft.save().unwrap();
         let reloaded = raft.load().unwrap();
+        println!("{reloaded:#?}");
         assert_eq!(reloaded, raft);
     }
 

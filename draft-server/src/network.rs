@@ -1,5 +1,5 @@
 use std::{net::SocketAddr};
-use draft_core::{Cluster, NodeMetadata, config::RaftConfig};
+use draft_core::{Cluster, NodeMetadata};
 use std::sync::Arc;
 use tokio::{sync::mpsc, join};
 use hashbrown::HashMap;
@@ -74,7 +74,7 @@ impl RaftServer {
             peers: Arc::new(peers.clone()),
             socket_addr_to_peer_map: Arc::new(socket_addr_to_peer_map),
             socket: Arc::new(None),
-            rpc_request_receiver: rpc_request_receiver,
+            rpc_request_receiver,
             rpc_response_sender: Arc::new(rpc_response_sender)
         }
     }
