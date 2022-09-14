@@ -79,22 +79,24 @@ pub fn handle_request_vote<S>(
     receiver_node: &RaftNode<S>,
     request: VoteRequest,
 ) -> Result<VoteResponse, RequestVoteRPCError> {
-    if request.term < receiver_node.persistent_state.current_term {
+    let mut persistent_state_guard = receiver_node.persistent_state.lock().expect("Failed to lock persistent state");
+
+    if request.term < persistent_state_guard.current_term {
         // The candidate is straight up out-of-date.
         // Inform it of the latest term that we know of.
         return Err(RequestVoteRPCError::NodeOutOfDate {
             self_id: receiver_node.metadata.id,
-            handler_term: receiver_node.persistent_state.current_term,
+            handler_term: persistent_state_guard.current_term,
             requested_term: request.term,
-            latest_term: receiver_node.persistent_state.current_term,
+            latest_term: persistent_state_guard.current_term,
         });
     }
 
-    if let Some(vote_recipient) = receiver_node.persistent_state.voted_for {
+    if let Some(vote_recipient) = persistent_state_guard.voted_for {
         // Check if we have already voted in the requested term.
         // If so, reject if a different candidate requests vote.
         if (vote_recipient != request.candidate_id)
-            && (request.term == receiver_node.persistent_state.current_term)
+            && (request.term == persistent_state_guard.current_term)
         {
             // We've already voted for someone else.
             // Oops. Sorry, dear requester.
@@ -107,7 +109,7 @@ pub fn handle_request_vote<S>(
         }
     }
 
-    let self_log_len = receiver_node.persistent_state.log.len();
+    let self_log_len = persistent_state_guard.log.len();
     match (self_log_len, request.last_log_index) {
         (1.., 0) => {
             // We have some entries but candidate comes bearing no entries.
@@ -116,7 +118,7 @@ pub fn handle_request_vote<S>(
                 self_id: receiver_node.metadata.id,
                 requested_node_id: request.candidate_id,
                 requested_num_log_entries: request.last_log_index,
-                last_log_entry_term: receiver_node.persistent_state.log.last().unwrap().0,
+                last_log_entry_term: persistent_state_guard.log.last().unwrap().0,
                 latest_term: request.term,
             });
         }
@@ -127,7 +129,7 @@ pub fn handle_request_vote<S>(
             // Otherwise, the log with the higher last term is the fresher log.
 
             // Let's match the terms of the last entries.
-            let self_last_log_entry_term = receiver_node.persistent_state.log.last().unwrap().0;
+            let self_last_log_entry_term = persistent_state_guard.log.last().unwrap().0;
             let request_last_log_term = request.last_log_term;
 
             match self_last_log_entry_term.cmp(&request_last_log_term) {
@@ -156,7 +158,7 @@ pub fn handle_request_vote<S>(
                         requested_last_log_entry_term: request.last_log_term,
                         self_last_log_entry_term,
                         requested_num_log_entries: request.last_log_index,
-                        self_num_log_entries: receiver_node.persistent_state.log.len(),
+                        self_num_log_entries: persistent_state_guard.log.len(),
                         latest_term: request.term,
                     });
                 }
@@ -178,6 +180,8 @@ pub fn handle_request_vote<S>(
 mod tests {
     pub use super::*;
     pub use crate::*;
+    pub use std::sync::{Arc, Mutex};
+    
     #[allow(unused_imports)]
     pub use crate::rpc::utils::*;
 
@@ -194,7 +198,7 @@ mod tests {
             pub fn $func_name() {
                 utils::set_up_logging();
                 let mut receiver_raft: RaftNode<BufferBackend> = RaftNode::default();
-                receiver_raft.persistent_state = $initial_persistent_state;
+                receiver_raft.persistent_state = Arc::new(Mutex::new($initial_persistent_state));
                 assert!(receiver_raft.are_terms_non_decreasing());
                 let request: VoteRequest = $request;
                 let observed_response = receiver_raft.try_handle_request_vote(request);

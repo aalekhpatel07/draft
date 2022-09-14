@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use derive_builder::Builder;
@@ -13,6 +14,7 @@ use crate::config::{RaftConfig, load_from_file};
 pub type Log = (usize, Bytes);
 pub type Port = u16;
 pub type Cluster = HashMap<usize, NodeMetadata>;
+pub type Shared<T> = Arc<Mutex<T>>;
 
 pub trait Term {
     fn term(&self) -> usize;
@@ -72,9 +74,9 @@ impl Default for ElectionState {
 pub struct RaftNode<S> {
     pub metadata: NodeMetadata,
     pub cluster: HashMap<usize, NodeMetadata>,
-    pub persistent_state: PersistentState,
-    pub volatile_state: VolatileState,
-    pub election_state: ElectionState,
+    pub persistent_state: Shared<PersistentState>,
+    pub volatile_state: Shared<VolatileState>,
+    pub election_state: Shared<ElectionState>,
     #[serde(skip)]
     pub storage: S,
 }
@@ -86,9 +88,9 @@ where
     /// Exclude self.storage from equality check.
     fn eq(&self, other: &Self) -> bool {
         self.metadata.eq(&other.metadata)
-            && self.election_state.eq(&other.election_state)
-            && self.persistent_state.eq(&other.persistent_state)
-            && self.volatile_state.eq(&other.volatile_state)
+            && self.election_state.lock().expect("Couldn't lock own election state.").eq(&other.election_state.lock().expect("Couldn't lock other's election state."))
+            && self.persistent_state.lock().expect("Couldn't lock own persistent state.").eq(&other.persistent_state.lock().expect("Couldn't lock other's persistent state."))
+            && self.volatile_state.lock().expect("Couldn't lock own volatile state.").eq(&other.volatile_state.lock().expect("Couldn't lock other's volatile state."))
             && self.cluster.eq(&other.cluster)
     }
 }
@@ -99,7 +101,7 @@ impl<S> RaftNode<S>
 where
     S: Storage,
 {
-    pub fn save(&mut self) -> color_eyre::Result<usize> {
+    pub fn save(&self) -> color_eyre::Result<usize> {
         match serde_json::to_vec(self) {
             Ok(serialized_data) => Ok(self.storage.save(&serialized_data)?),
             Err(e) => Err(e.into()),
@@ -118,10 +120,11 @@ where
     /// Determine whether all entries in our log have non-decreasing terms.
     #[cfg(test)]
     pub fn are_terms_non_decreasing(&self) -> bool {
-        self.persistent_state
+        let guard = self.persistent_state.lock().expect("Failed to lock persistent state");
+            guard
             .log
             .iter()
-            .zip(self.persistent_state.log.iter().skip(1))
+            .zip(guard.log.iter().skip(1))
             .all(|(predecessor_entry, successor_entry)| {
                 successor_entry.term() >= predecessor_entry.term()
             })
@@ -260,7 +263,7 @@ mod tests {
             .expect("Couldn't build persistent state with builder.");
 
         let mut raft: RaftNode<S> = RaftNode::<S> {
-            persistent_state: state,
+            persistent_state: Arc::new(Mutex::new(state)),
             ..Default::default()
         };
 

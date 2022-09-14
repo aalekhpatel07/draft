@@ -66,22 +66,24 @@ pub enum AppendEntriesRPCError {
 }
 
 pub fn handle_append_entries<S>(
-    receiver_node: &mut RaftNode<S>,
+    receiver_node: &RaftNode<S>,
     request: AppendEntriesRequest,
 ) -> Result<AppendEntriesResponse, AppendEntriesRPCError> {
-    if request.term < receiver_node.persistent_state.current_term {
+    let mut persistent_state_guard = receiver_node.persistent_state.lock().expect("Couldn't lock persistent state.");
+
+    if request.term < persistent_state_guard.current_term {
         // The candidate is straight up out-of-date.
         // Inform it of the latest term that we know of.
         return Err(AppendEntriesRPCError::NodeOutOfDate {
             self_id: receiver_node.metadata.id,
-            handler_term: receiver_node.persistent_state.current_term,
+            handler_term: persistent_state_guard.current_term,
             requested_term: request.term,
-            latest_term: receiver_node.persistent_state.current_term,
+            latest_term: persistent_state_guard.current_term,
             requested_entries_len: request.entries.len(),
         });
     }
 
-    if receiver_node.persistent_state.log.is_empty() {
+    if persistent_state_guard.log.is_empty() {
         // We have an empty log.
         if request.previous_log_index == 0 {
             // So does the leader.
@@ -91,18 +93,20 @@ pub fn handle_append_entries<S>(
                 let num_entries = request.entries.len();
 
                 trace!("Clearing our log and replacing it with ({num_entries}) entries provided by the leader");
-                receiver_node.persistent_state.log.clear();
-                receiver_node
-                    .persistent_state
+                persistent_state_guard.log.clear();
+                persistent_state_guard
                     .log
                     .extend(request.entries.into_iter());
             }
 
             // Update our commit index to include our newly updated entries which the leader
             // guarantees to have committed.
-            let last_new_entry_index = receiver_node.persistent_state.log.len();
-            if request.leader_commit_index > receiver_node.volatile_state.commit_index {
-                receiver_node.volatile_state.commit_index =
+            let last_new_entry_index = persistent_state_guard.log.len();
+
+            let mut volatile_state_guard = receiver_node.volatile_state.lock().expect("Failed to lock volatile state");
+
+            if request.leader_commit_index > volatile_state_guard.commit_index {
+                volatile_state_guard.commit_index =
                     request.leader_commit_index.min(last_new_entry_index)
             }
 
@@ -138,11 +142,12 @@ pub fn handle_append_entries<S>(
         });
     }
 
+
     // We have some entries in our local log.
     // Do we have one at the specified index though?
 
     // If we don't have enough entries, just stop early.
-    if receiver_node.persistent_state.log.len() < request.previous_log_index {
+    if persistent_state_guard.log.len() < request.previous_log_index {
         // Leader doesn't have a valid tail to point to.
         // Our stored log doesn't contain the tail entry that the leader wants us to
         // append new entries to.
@@ -167,8 +172,8 @@ pub fn handle_append_entries<S>(
     // the tail entry.
     // If request.previous_log_index is 0, it means no tail entry exists
     // and we must start from the first entry.
-    let stored_entries_terms = receiver_node
-        .persistent_state
+    let stored_entries_terms = 
+        persistent_state_guard
         .log
         .iter()
         .skip(request.previous_log_index) // Start at the given tail entry.
@@ -233,8 +238,8 @@ pub fn handle_append_entries<S>(
             // We need to remove all stored entries including and following (previous_log_index + index).
             let index_to_drain_local_log_from = request.previous_log_index + index_to_remove_from;
 
-            let removed_count = receiver_node
-                .persistent_state
+            let removed_count =
+                persistent_state_guard
                 .log
                 .drain(index_to_drain_local_log_from..)
                 .count();
@@ -254,25 +259,24 @@ pub fn handle_append_entries<S>(
 
     // Either we need to remove an extra suffix from our log,
     if let Some(index_of_suffix_to_remove) = should_remove_stored_entries_from {
-        receiver_node
-            .persistent_state
+            persistent_state_guard
             .log
             .drain(index_of_suffix_to_remove..);
     }
 
     // Or we may append a suffix from the requested entries.
     if let Some(index_to_extend_from) = should_extend_remaining_entries_from {
-        receiver_node
-            .persistent_state
-            .log
-            .extend_from_slice(request.entries.get(index_to_extend_from..).unwrap());
+        persistent_state_guard
+        .log
+        .extend_from_slice(request.entries.get(index_to_extend_from..).unwrap());
     }
 
     // Update our commit index to include our newly updated entries which the leader
     // guarantees to have committed.
-    let last_new_entry_index = receiver_node.persistent_state.log.len();
-    if request.leader_commit_index > receiver_node.volatile_state.commit_index {
-        receiver_node.volatile_state.commit_index =
+    let last_new_entry_index = persistent_state_guard.log.len();
+    let mut volatile_state_guard = receiver_node.volatile_state.lock().expect("Failed to lock volatile state");
+    if request.leader_commit_index > volatile_state_guard.commit_index {
+        volatile_state_guard.commit_index =
             request.leader_commit_index.min(last_new_entry_index)
     }
 
@@ -286,6 +290,7 @@ pub fn handle_append_entries<S>(
 pub mod tests {
     pub use super::*;
     pub use crate::*;
+    pub use std::sync::{Arc, Mutex};
 
     #[allow(unused_imports)]
     pub use crate::rpc::utils::*;
@@ -307,8 +312,8 @@ pub mod tests {
                 utils::set_up_logging();
                 let mut receiver_raft: RaftNode<BufferBackend> = RaftNode::default();
 
-                receiver_raft.persistent_state = $initial_persistent_state;
-                receiver_raft.volatile_state = $initial_volatile_state;
+                receiver_raft.persistent_state = Arc::new(Mutex::new($initial_persistent_state));
+                receiver_raft.volatile_state = Arc::new(Mutex::new($initial_volatile_state));
 
                 assert!(receiver_raft.are_terms_non_decreasing());
 
@@ -316,9 +321,9 @@ pub mod tests {
                 let observed_response = receiver_raft.try_handle_append_entries(request);
 
                 assert!(matches!(observed_response, $response));
-                assert_eq!(receiver_raft.persistent_state, $final_persistent_state);
-                assert_eq!(receiver_raft.load().unwrap().persistent_state, $final_persistent_state);
-                assert_eq!(receiver_raft.volatile_state, $final_volatile_state);
+                assert_eq!(*receiver_raft.persistent_state.lock().unwrap(), $final_persistent_state);
+                assert_eq!(*receiver_raft.load().unwrap().persistent_state.lock().unwrap(), $final_persistent_state);
+                assert_eq!(*receiver_raft.volatile_state.lock().unwrap(), $final_volatile_state);
 
                 assert!(receiver_raft.are_terms_non_decreasing());
 

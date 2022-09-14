@@ -13,19 +13,19 @@ use tracing::{error, instrument};
 
 pub trait TryRaftRPC {
     fn try_handle_request_vote(
-        &mut self,
+        &self,
         request: VoteRequest,
     ) -> Result<VoteResponse, RequestVoteRPCError>;
     fn try_handle_append_entries(
-        &mut self,
+        &self,
         request: AppendEntriesRequest,
     ) -> Result<AppendEntriesResponse, AppendEntriesRPCError>;
 }
 
 pub trait RaftRPC {
-    fn handle_request_vote(&mut self, request: VoteRequest) -> color_eyre::Result<VoteResponse>;
+    fn handle_request_vote(&self, request: VoteRequest) -> color_eyre::Result<VoteResponse>;
     fn handle_append_entries(
-        &mut self,
+        &self,
         request: AppendEntriesRequest,
     ) -> color_eyre::Result<AppendEntriesResponse>;
 }
@@ -38,22 +38,28 @@ where
     /// as described in Section 5.4.1 and Figure 3.
     #[instrument(skip(self), target = "rpc::RequestVote")]
     fn try_handle_request_vote(
-        &mut self,
+        &self,
         request: VoteRequest,
     ) -> Result<VoteResponse, RequestVoteRPCError> {
         handle_request_vote(self, request)
     }
     #[instrument(skip(self), target = "rpc::AppendEntries")]
     fn try_handle_append_entries(
-        &mut self,
+        &self,
         request: AppendEntriesRequest,
     ) -> Result<AppendEntriesResponse, AppendEntriesRPCError> {
         let requested_term = request.term;
 
         let res = handle_append_entries(self, request);
+        let mut persistent_state_guard = self.persistent_state.lock().expect("Failed to lock persistent state.");
+
         match res {
             Ok(result) => {
-                self.persistent_state.current_term = result.term;
+                persistent_state_guard.current_term = result.term;
+                // NOTE: 
+                // Maybe serde holds the lock when serializing the PersistentState.
+                // Not dropping it before self.save() causes a deadlock.
+                drop(persistent_state_guard);
 
                 if let Err(e) = self.save() {
                     error!("{}", e.to_string());
@@ -62,14 +68,24 @@ where
             }
             Err(err) => match err {
                 AppendEntriesRPCError::NodeOutOfDate { latest_term, .. } => {
-                    self.persistent_state.current_term = latest_term;
+                    persistent_state_guard.current_term = latest_term;
+                    // NOTE: 
+                    // Maybe serde holds the lock when serializing the PersistentState.
+                    // Not dropping it before self.save() causes a deadlock.
+                    drop(persistent_state_guard);
+
                     if let Err(e) = self.save() {
                         error!("{}", e.to_string());
                     }
                     Err(err)
                 }
                 e => {
-                    self.persistent_state.current_term = requested_term;
+                    persistent_state_guard.current_term = requested_term;
+                    // NOTE: 
+                    // Maybe serde holds the lock when serializing the PersistentState.
+                    // Not dropping it before self.save() causes a deadlock.
+                    drop(persistent_state_guard);
+
                     if let Err(e) = self.save() {
                         error!("{}", e.to_string());
                     }
@@ -84,15 +100,16 @@ impl<S> RaftRPC for RaftNode<S>
 where
     S: Storage
 {
-    fn handle_request_vote(&mut self, request: VoteRequest) -> color_eyre::Result<VoteResponse> {
+    fn handle_request_vote(&self, request: VoteRequest) -> color_eyre::Result<VoteResponse> {
         let candidate_id = request.candidate_id;
 
         match handle_request_vote(self, request) {
             Ok(response) => {
                 // The rpc was handled correctly as expected.
                 // We must grant vote now.
-                self.persistent_state.voted_for = Some(candidate_id);
-                self.persistent_state.current_term = response.term;
+                let mut persistent_state_guard = self.persistent_state.lock().expect("Failed to lock persistent state");
+                persistent_state_guard.voted_for = Some(candidate_id);
+                persistent_state_guard.current_term = response.term;
                 self.save()?;
 
                 Ok(response)
@@ -123,7 +140,7 @@ where
     }
 
     fn handle_append_entries(
-        &mut self,
+        &self,
         request: AppendEntriesRequest,
     ) -> color_eyre::Result<AppendEntriesResponse> {
         let requested_term = request.term;
