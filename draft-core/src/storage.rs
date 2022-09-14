@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub trait Storage: Default {
+pub trait Storage {
     fn save(&self, data: &[u8]) -> color_eyre::Result<usize>;
     fn load(&self) -> color_eyre::Result<Vec<u8>>;
 }
