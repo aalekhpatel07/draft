@@ -228,7 +228,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
- "tokio",
  "toml",
  "tracing",
 ]
@@ -240,6 +239,7 @@ dependencies = [
  "anyhow",
  "color-eyre",
  "draft-core",
+ "hashbrown",
  "hyper",
  "rmp-serde",
  "serde",

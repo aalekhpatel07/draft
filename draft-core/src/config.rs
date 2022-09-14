@@ -17,6 +17,19 @@ pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<RaftConfig, std::io::Er
     })
 }
 
+impl Default for RaftConfig {
+    fn default() -> Self {
+        Self {
+            server: NodeMetadata { id: 1, addr: "127.0.0.1:9000".parse().unwrap() },
+            peers: vec![
+                NodeMetadata { id: 2, addr: "127.0.0.1:9001".parse().unwrap() },
+                NodeMetadata { id: 3, addr: "127.0.0.1:9002".parse().unwrap() },
+            ]
+        }
+    }
+}
+
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
