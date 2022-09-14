@@ -144,29 +144,17 @@ where
     S: Storage
 {
     fn handle_request_vote(&self, request: VoteRequest) -> color_eyre::Result<VoteResponse> {
+        let requested_term = request.term;
+
         match self.try_handle_request_vote(request) {
             Ok(response) => Ok(response),
             Err(err) => match err {
-                RequestVoteRPCError::AlreadyVoted { latest_term, .. } => Ok(VoteResponse {
-                    term: latest_term,
-                    vote_granted: false,
-                }),
-                RequestVoteRPCError::CandidateNodeHasEmptyLog { latest_term, .. } => {
+                RequestVoteRPCError::NodeOutOfDate { latest_term, .. } => 
                     Ok(VoteResponse {
                         term: latest_term,
                         vote_granted: false,
-                    })
-                }
-                RequestVoteRPCError::CandidateNodeHasStaleLog { latest_term, .. } => {
-                    Ok(VoteResponse {
-                        term: latest_term,
-                        vote_granted: false,
-                    })
-                }
-                RequestVoteRPCError::NodeOutOfDate { latest_term, .. } => Ok(VoteResponse {
-                    term: latest_term,
-                    vote_granted: false,
-                }),
+                    }),
+                _ => Ok(VoteResponse { term: requested_term, vote_granted: false })
             },
         }
     }
@@ -179,12 +167,11 @@ where
         match handle_append_entries(self, request) {
             Ok(response) => Ok(response),
             Err(err) => match err {
-                AppendEntriesRPCError::NodeOutOfDate { latest_term, .. } => {
+                AppendEntriesRPCError::NodeOutOfDate { latest_term, .. } =>
                     Ok(AppendEntriesResponse {
                         term: latest_term,
                         success: false,
-                    })
-                }
+                    }),
                 _ => Ok(AppendEntriesResponse {
                     term: requested_term,
                     success: false,
