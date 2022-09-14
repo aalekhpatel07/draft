@@ -4,7 +4,7 @@ use bytes::Bytes;
 use hashbrown::HashMap;
 
 #[allow(dead_code)]
-pub(crate) fn vote_request(
+pub fn vote_request(
     term: usize,
     candidate_id: usize,
     last_log_index: usize,
@@ -19,7 +19,7 @@ pub(crate) fn vote_request(
 }
 
 #[allow(dead_code)]
-pub(crate) fn append_entries_request(
+pub fn append_entries_request(
     term: usize,
     leader_id: usize,
     previous_log_index: usize,

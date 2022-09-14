@@ -245,6 +245,7 @@ dependencies = [
  "rand",
  "rmp-serde",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

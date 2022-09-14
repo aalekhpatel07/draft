@@ -8,7 +8,7 @@ use hashbrown::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::load_from_file;
+use crate::config::{load_from_file, RaftConfig};
 use crate::storage::Storage;
 
 pub type Log = (usize, Bytes);
@@ -26,7 +26,7 @@ impl Term for Log {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Builder, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Builder, Eq, Serialize, Deserialize)]
 pub struct NodeMetadata {
     pub id: usize,
     pub addr: SocketAddr,
@@ -153,7 +153,7 @@ impl<S> Eq for RaftNode<S> where S: Storage {}
 
 impl<S> RaftNode<S>
 where
-    S: Storage,
+    S: Storage + Default,
 {
     pub fn save(&self) -> color_eyre::Result<usize> {
         match serde_json::to_vec(self) {
@@ -205,6 +205,30 @@ where
 
     pub fn new() -> Self {
         Self::default().with_config("/etc/raftd/raftd.toml")
+    }
+
+}
+
+impl<S> From<RaftConfig> for RaftNode<S>
+where
+    S: Storage + Default
+{
+    fn from(config: RaftConfig) -> Self {
+
+        let mut cluster = HashMap::new();
+
+        for node_metadata in config.peers.iter() {
+            cluster.insert(node_metadata.id, node_metadata.clone());
+        }
+
+        Self {
+            metadata: config.server,
+            cluster,
+            persistent_state: Arc::new(Mutex::new(PersistentState::default())),
+            volatile_state: Arc::new(Mutex::new(VolatileState::default())),
+            election_state: Arc::new(Mutex::new(ElectionState::default())),
+            storage: S::default()
+        }
     }
 }
 
@@ -318,7 +342,7 @@ mod tests {
 
     fn save_works<S>()
     where
-        S: Storage + Debug,
+        S: Storage + Debug + Default,
     {
         let state = PersistentStateBuilder::default()
             .current_term(10)

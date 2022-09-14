@@ -188,6 +188,22 @@ mod tests {
     #[allow(unused_imports)]
     pub use crate::rpc::utils::*;
 
+    #[test]
+    fn serialize_to_string_works() {
+        let request = vote_request(0, 2, 0, 0);
+        let serialized  = serde_json::to_string(&request);
+        assert!(serialized.is_ok());
+        assert_eq!(serialized.unwrap(), r#"{"term":0,"candidate_id":2,"last_log_index":0,"last_log_term":0}"#.to_owned());
+    }
+
+    #[test]
+    fn deserialize_works() {
+        let as_string = "{\"term\":0,\"candidate_id\":2,\"last_log_index\":0,\"last_log_term\":0}";
+        let deserialized = serde_json::from_str::<VoteRequest>(&as_string);
+        assert!(deserialized.is_ok());
+        assert_eq!(deserialized.unwrap(), vote_request(0, 2, 0, 0));
+    }
+
     macro_rules! request_vote_test {
         (
             $(#[$meta:meta])*
