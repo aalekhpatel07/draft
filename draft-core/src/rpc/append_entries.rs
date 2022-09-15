@@ -102,6 +102,7 @@ pub fn handle_append_entries<S>(
                     .extend(request.entries.into_iter());
             }
 
+            persistent_state_guard.current_term = persistent_state_guard.current_term.max(request.term);
             // Update our commit index to include our newly updated entries which the leader
             // guarantees to have committed.
             let last_new_entry_index = persistent_state_guard.log.len();
@@ -571,4 +572,21 @@ pub mod tests {
         persistent_state(1, Some(1), vec![1, 1]),
         volatile_state(1, 0, None, None)
     );
+
+    append_entries_test!(
+        /// Suppose a leader is in term 8 and has entries with terms \[6\] in its log.
+        /// Also, it guarantees that nothing has been committed yet (i.e. commit_index = 0).
+        /// At the same time, a follower is in term 2 with no log entries.
+        append_entries_works_and_term_is_updated_if_server_too_far_ahead,
+        persistent_state(2, Some(2), vec![]),
+        volatile_state(0, 0, None, None),
+        append_entries_request(8, 2, 0, 0, vec![6], 0),
+        Ok(AppendEntriesResponse {
+            term: 8,
+            success: true
+        }),
+        persistent_state(8, Some(2), vec![6]),
+        volatile_state(0, 0, None, None)
+    );
+
 }
