@@ -1,13 +1,17 @@
+use std::fmt::{Debug, write};
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use derive_builder::Builder;
 use hashbrown::HashMap;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use serde::{Deserialize, Serialize};
 
+use crate::{VoteResponse, VoteRequest};
 use crate::config::{load_from_file, RaftConfig};
 use crate::storage::Storage;
 
@@ -60,6 +64,13 @@ pub struct VolatileState {
     pub match_index: Option<HashMap<usize, Option<usize>>>,
 }
 
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub struct Election {
+    pub state: ElectionState,
+    pub voter_log: hashbrown::HashSet<usize>,
+    pub current_term: usize
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ElectionState {
     Follower,
@@ -73,7 +84,7 @@ impl Default for ElectionState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct RaftNode<S> {
     pub metadata: NodeMetadata,
     pub cluster: HashMap<usize, NodeMetadata>,
@@ -82,9 +93,24 @@ pub struct RaftNode<S> {
     #[serde(with = "arc_mutex_serde")]
     pub volatile_state: Shared<VolatileState>,
     #[serde(with = "arc_mutex_serde")]
-    pub election_state: Shared<ElectionState>,
+    pub election: Shared<Election>,
     #[serde(skip)]
     pub storage: S,
+}
+
+impl<S> core::fmt::Debug for RaftNode<S>
+where
+    S: Debug 
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RaftNode")
+            .field("persistent_state", &self.persistent_state)
+            .field("volatile_state", &self.volatile_state)
+            .field("election", &self.election)
+            .field("cluster", &self.cluster)
+            .field("metadata", &self.metadata)
+            .finish()
+    }
 }
 
 /// Delegate ser/de to the data inside ArcMutex.
@@ -122,11 +148,11 @@ where
     fn eq(&self, other: &Self) -> bool {
         self.metadata.eq(&other.metadata)
             && self
-                .election_state
+                .election
                 .lock()
                 .expect("Couldn't lock own election state.")
                 .eq(&other
-                    .election_state
+                    .election
                     .lock()
                     .expect("Couldn't lock other's election state."))
             && self
@@ -207,6 +233,113 @@ where
         Self::default().with_config("/etc/raftd/raftd.toml")
     }
 
+    pub fn reset_election(&self, term: usize) {
+        let mut election_guard = self.election.lock().unwrap();
+        election_guard.state = ElectionState::Follower;
+        election_guard.voter_log = hashbrown::HashSet::default();
+        election_guard.current_term = term;
+        drop(election_guard);
+
+    }
+
+
+    pub fn handle_request_vote_response(
+        &self, 
+        peer_id: usize, 
+        response: VoteResponse,
+        has_become_leader_tx: UnboundedSender<()>
+    ) {
+        // We got a VoteResponse.
+
+        let persistent_state_guard = self.persistent_state.lock().unwrap();
+        let current_term = persistent_state_guard.current_term;
+        drop(persistent_state_guard);
+
+        // Update our current_term, if we're out-of-date.
+        if response.term > current_term {
+
+            let mut persistent_state_guard = self.persistent_state.lock().unwrap();
+            persistent_state_guard.current_term = response.term;
+
+            // Respectfully become a follower, since we're out-of-date.
+            let mut election_guard = self.election.lock().unwrap();
+            
+            election_guard.state = ElectionState::Follower;
+            election_guard.voter_log = hashbrown::HashSet::default();
+            election_guard.current_term = response.term;
+
+            drop(election_guard);
+            drop(persistent_state_guard);
+
+            if let Err(e) = self.save() {
+                tracing::error!("{}", e.to_string());
+            }
+            return
+        }
+
+        if response.vote_granted {
+            let mut election_guard = self.election.lock().unwrap();
+            election_guard.voter_log.insert(peer_id);
+            election_guard.current_term = current_term;
+
+            let vote_count = election_guard.voter_log.len();
+            drop(election_guard);
+
+            let majority_vote_threshold = (self.cluster.len() + 1) / 2;
+            if vote_count >= majority_vote_threshold {
+                tracing::trace!("Received a majority of the votes. Becoming the leader.");
+                let mut election_guard = self.election.lock().unwrap();
+                election_guard.state = ElectionState::Leader;
+                drop(election_guard);
+
+                // Notify ourselves of our election win.
+                // And begin sending AppendEntriesRPCs.
+                if let Err(e) = has_become_leader_tx.send(()) {
+                    tracing::error!("Error sending a notification of our election win: {}", e.to_string());
+                }
+            }
+        }
+        // if let Err(e) = self.save() {
+        //     tracing::error!("{}", e.to_string());
+        // }
+    }
+
+    pub fn handle_becoming_candidate(&self) {
+        let mut persistent_state_guard = self.persistent_state.lock().unwrap();
+
+        persistent_state_guard.current_term += 1;
+        persistent_state_guard.voted_for = Some(self.metadata.id);
+
+        let current_term = persistent_state_guard.current_term;
+        drop(persistent_state_guard);
+
+        let mut election_guard = self.election.lock().unwrap();
+        
+        election_guard.state = ElectionState::Candidate;
+        election_guard.current_term = current_term;
+        election_guard.voter_log = hashbrown::HashSet::default();
+
+        drop(election_guard);
+
+    }
+
+    pub fn build_vote_request(&self) -> VoteRequest {
+        let persistent_state_guard = self.persistent_state.lock().unwrap();
+        let term = persistent_state_guard.current_term;
+        let last_log_index = persistent_state_guard.log.len();
+        let last_log_term = {
+            if persistent_state_guard.log.is_empty() {
+                0
+            }
+            else {
+                persistent_state_guard.log.last().unwrap().term()
+            }
+        };
+        drop(persistent_state_guard);
+        
+        VoteRequest { term, candidate_id: self.metadata.id, last_log_index, last_log_term}
+    }
+
 }
 
 impl<S> From<RaftConfig> for RaftNode<S>
@@ -226,7 +359,7 @@ where
             cluster,
             persistent_state: Arc::new(Mutex::new(PersistentState::default())),
             volatile_state: Arc::new(Mutex::new(VolatileState::default())),
-            election_state: Arc::new(Mutex::new(ElectionState::default())),
+            election: Arc::new(Mutex::new(Election::default())),
             storage: S::default()
         }
     }
@@ -269,17 +402,6 @@ mod tests {
             }
         });
 
-        // while match listener.accept() {
-        //     Ok((mut socket, _addr)) => {
-        //         std::thread::spawn(move || {
-        //             let mut buffer = Vec::new();
-        //             socket.read_to_end(&mut buffer).unwrap();
-        //             print!("{:#?}", buffer);
-        //         });
-        //     },
-        //     Err(_err) => {}
-        // }
-        // {}
     }
 
     #[test]
