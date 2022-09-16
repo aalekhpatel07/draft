@@ -253,6 +253,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+ "structopt",
  "thiserror",
  "tokio",
  "toml",
