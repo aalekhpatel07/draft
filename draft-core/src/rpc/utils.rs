@@ -58,13 +58,23 @@ pub(crate) fn persistent_state(
 pub(crate) fn volatile_state(
     commit_index: usize,
     last_applied: usize,
-    next_index: Option<HashMap<usize, Option<usize>>>,
-    match_index: Option<HashMap<usize, Option<usize>>>,
+    next_index: Option<HashMap<usize, usize>>,
+    match_index: Option<HashMap<usize, usize>>,
 ) -> VolatileState {
+
+    let next_index_value = match next_index {
+        Some(hmap) => hmap,
+        None => HashMap::default()
+    };
+    let match_index_value = match match_index {
+        Some(hmap) => hmap,
+        None => HashMap::default()
+    };
+
     VolatileState {
         commit_index,
         last_applied,
-        next_index,
-        match_index,
+        next_index: next_index_value,
+        match_index: match_index_value,
     }
 }

@@ -297,6 +297,7 @@ pub mod tests {
     pub use super::*;
     pub use crate::*;
     pub use std::sync::{Arc, Mutex};
+    use tracing::Level;
 
     #[allow(unused_imports)]
     pub use crate::rpc::utils::*;
@@ -335,7 +336,7 @@ pub mod tests {
             $(#[$meta])*
             #[test]
             pub fn $func_name() {
-                utils::set_up_logging();
+                utils::set_up_logging(Level::TRACE);
                 let mut receiver_raft: RaftNode<BufferBackend> = RaftNode::default();
 
                 receiver_raft.persistent_state = Arc::new(Mutex::new($initial_persistent_state));
