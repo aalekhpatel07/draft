@@ -322,12 +322,12 @@ mod tests {
     use super::*;
     use crate::*;
     use crate::utils::set_up_logging;
-    use tracing::{info, trace};
+    use tracing::{info, trace, Level};
 
 
     #[tokio::test]
     async fn server_init_works() -> color_eyre::Result<()> {
-        set_up_logging();
+        set_up_logging(Level::TRACE);
         let (_socket_write_sender, socket_write_receiver) = mpsc::unbounded_channel();
         let (peer_data_sender, _peer_data_receiver) = mpsc::unbounded_channel();
         let config = draft_core::config::RaftConfig::default();
@@ -346,7 +346,7 @@ mod tests {
     #[tokio::test]
     async fn server_run_works() -> color_eyre::Result<()> {
 
-        set_up_logging();
+        set_up_logging(Level::TRACE);
         let (socket_write_sender, socket_write_receiver) = mpsc::unbounded_channel();
         let (peer_data_sender, mut peer_data_receiver) = mpsc::unbounded_channel();
         let config = draft_core::config::RaftConfig::default();

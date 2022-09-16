@@ -6,7 +6,7 @@ use draft_core::{
     AppendEntriesResponse, 
     RaftRPC
 };
-use crate::{VoteRequest, AppendEntriesRequest, Peer, PeerData};
+use crate::{VoteRequest, AppendEntriesRequest, Peer, PeerData, RaftTimer};
 use rand::Rng;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::{time::{interval, sleep, timeout, Interval, Timeout}, sync::mpsc::{UnboundedReceiver, UnboundedSender}, select};
@@ -24,7 +24,7 @@ pub struct RPCRx {
     pub request_vote_response_rx: UnboundedReceiver<(Peer, VoteResponse)>,
     pub append_entries_response_rx: UnboundedReceiver<(Peer, AppendEntriesResponse)>,
     pub request_vote_outbound_rx: UnboundedReceiver<(Peer, VoteRequest)>,
-    pub append_entries_outbound_rx: UnboundedReceiver<(Peer, VoteRequest)>,
+    pub append_entries_outbound_rx: UnboundedReceiver<(Peer, AppendEntriesRequest)>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,7 +34,7 @@ pub struct RPCTx {
     pub request_vote_response_tx: UnboundedSender<(Peer, VoteResponse)>,
     pub append_entries_response_tx: UnboundedSender<(Peer, AppendEntriesResponse)>,
     pub request_vote_outbound_tx: UnboundedSender<(Peer, VoteRequest)>,
-    pub append_entries_outbound_tx: UnboundedSender<(Peer, VoteRequest)>,
+    pub append_entries_outbound_tx: UnboundedSender<(Peer, AppendEntriesRequest)>,
 }
 
 #[derive(Debug)]
@@ -42,7 +42,7 @@ pub struct ElectionRx {
     pub has_become_leader_rx: UnboundedReceiver<()>,
     pub has_become_candidate_rx: UnboundedReceiver<()>,
     pub election_timer_rx: UnboundedReceiver<()>,
-    pub reset_election_timer_rx: UnboundedReceiver<()>
+    // pub reset_election_timer_rx: UnboundedReceiver<()>
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +59,7 @@ pub struct ElectionTx {
 pub struct RaftRuntime<S, N> {
     _core: Arc<RaftNode<S>>,
     _server: RaftServer<N>,
+    _timer: RaftTimer,
     pub config: RaftConfig,
     rpc_rx: RPCRx,
     rpc_tx: RPCTx,
@@ -82,24 +83,44 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
 
     loop {
         select! {
+
+            // We received an AppendEntriesRequest from a leader.
             Some(request) = rpc_rx.append_entries_rx.recv() => {
-                // If we were a leader, make ourselves a follower
-                // because we just received an RPC from the real leader.
+
+                // Regardless of our status, make ourselves a follower
+                // because we just received an RPC from the new leader
+                // even if we end up rejecting this RPC.
+
                 raft.reset_election(request.term);
 
+                // Reset our timer.
+                election_tx.reset_election_timer_tx.send(())?;
+
                 let peer_id = request.leader_id;
-                tracing::debug!("Received AppendEntriesRequest from peer ({:#?})", peer_id);
+                let rpc_kind_str: &str = {
+                    if request.is_heartbeat() {
+                        "Heartbeat"
+                    } else {
+                        "AppendEntries"
+                    }
+                };
+
+                tracing::trace!("Received {}Request from peer ({:#?})", rpc_kind_str, peer_id);
+
                 let response = raft.handle_append_entries(request);
 
                 if let Ok(bytes_written) = send_rpc(response, peer_id, socket_write_sender.clone()).await {
-                    tracing::debug!("Sending AppendEntriesResponse ({:#?} bytes) to peer ({:#?})", bytes_written, peer_id);
+                    tracing::trace!("Sending {}Response ({:#?} bytes) to peer ({:#?})", rpc_kind_str, bytes_written, peer_id);
                 } else {
-                    tracing::warn!("Couldn't send AppendEntriesResponse to peer {:#?}", peer_id);
+                    tracing::warn!("Couldn't send {}Response to peer {:#?}", rpc_kind_str, peer_id);
                 }
             },
+
+            // We received a VoteRequest from a candidate.
             Some(request) = rpc_rx.request_vote_rx.recv() => {
+
                 let peer_id = request.candidate_id;
-                tracing::debug!("Received VoteRequest from peer ({:#?})", peer_id);
+                tracing::trace!("Received VoteRequest from peer ({:#?})", peer_id);
                 let response = raft.handle_request_vote(request);
 
                 if response.vote_granted {
@@ -108,48 +129,73 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
                 }
 
                 if let Ok(bytes_written) = send_rpc(response, peer_id, socket_write_sender.clone()).await {
-                    tracing::debug!("Sending VoteResponse ({:#?} bytes) to peer ({:#?})", bytes_written, peer_id);
+                    tracing::trace!("Sending VoteResponse ({:#?} bytes) to peer ({:#?})", bytes_written, peer_id);
                 } else {
                     tracing::warn!("Couldn't send VoteResponse to peer {:#?}", peer_id);
                 }
-                tracing::debug!("Current raft:\n {:?}", raft);
+                tracing::trace!("Current raft:\n {:?}", raft);
             },
+
+            // We received a VoteResponse from a peer.
             Some((peer_id, response)) = rpc_rx.request_vote_response_rx.recv() => {
-                tracing::debug!("Received VoteRequestResponse from peer ({:#?})", peer_id);
+                tracing::trace!("Received VoteRequestResponse from peer ({:#?})", peer_id);
                 raft.handle_request_vote_response(peer_id, response, election_tx.has_become_leader_tx.clone());
             },
+
+            // We received an AppendEntriesResponse from a follower.
             Some((peer_id, response)) = rpc_rx.append_entries_response_rx.recv() => {
                 /*
                     TODO: Implement the retry-loop by decrementing indices
                           of the last log term, etc.
                 */
-            },
-            Some(_) = election_rx.election_timer_rx.recv() => {
-                // Election timer expired. Neither did we receive any AppendEntriesRPC nor
-                // did we grant any votes. Trigger the election by stepping up as a candidate.
-                election_tx.has_become_candidate_tx.send(())?;
-            },
-            Some(_) = election_rx.reset_election_timer_rx.recv() => {
-                /* 
-                    Either we just became aware of a leader,
-                    or we started a new election term and became
-                    a candidate.
-                */
-            },
-            Some(_) = election_rx.has_become_candidate_rx.recv() => {
-                tracing::debug!("Yay! We are now a candidate.");
-                raft.handle_becoming_candidate();
-                let request = raft.build_vote_request();
-                
-                for key in raft.cluster.keys() {
-                    rpc_tx.request_vote_outbound_tx.send((*key, request.clone()))?;
-                }
+
+
 
             },
+            // Election timer expired. Neither did we receive any AppendEntriesRPC nor
+            // did we grant any votes. Trigger the election by stepping up as a candidate.
+            Some(_) = election_rx.election_timer_rx.recv() => {
+                election_tx.has_become_candidate_tx.send(())?;
+            },
+            // Rules for Servers (Candidates) (Section 5.2-4)
+            // We just became a candidate.
+            Some(_) = election_rx.has_become_candidate_rx.recv() => {
+
+                // Rules for Servers (Candidates) (Section 5.2)
+
+                tracing::debug!("Yay! We are now a candidate.");
+                raft.handle_becoming_candidate();
+                
+                // Reset the election timer.
+                election_tx.reset_election_timer_tx.send(())?;
+
+                // Send out VoteRequest to all nodes.
+                let request = raft.build_vote_request();
+                for node in raft.nodes() {
+                    if let Err(send_err) = rpc_tx.request_vote_outbound_tx.send((node, request.clone())) {
+                        tracing::error!("Failed to send to {} on the outbound request_vote channel.\n\nError: {}", node, send_err);
+                    }
+                }
+            },
+
+            // Rules for Servers (Leaders) (Section 5.2-4)
+            // We just became a leader.
             Some(_) = election_rx.has_become_leader_rx.recv() => {
                 tracing::debug!("Yay! We are now a leader.");
                 
+                let request = raft.build_heartbeat();
+
+                // Send out initial heartbeats to all nodes.
+                for node in raft.nodes() {
+                    if let Err(send_err) = rpc_tx.append_entries_outbound_tx.send((node, request.clone())) {
+                        tracing::error!("Failed to send to {} on the outbound append_entries channel.\n\nError: {}", node, send_err);
+                    }
+                }
             },
+
+            // The Output side of Network IO.
+
+            // We wish to send a vote request to a peer.
             Some((peer_id, request)) = rpc_rx.request_vote_outbound_rx.recv() => {
                 if let Ok(bytes_written) = send_rpc(request, peer_id, socket_write_sender.clone()).await {
                     tracing::trace!("Sending RequestVoteRPC ({:#?} bytes) to peer ({:#?})", bytes_written, peer_id);
@@ -157,6 +203,7 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
                     tracing::warn!("Couldn't send RequestVoteRPC to peer {:#?}", peer_id);
                 }
             },
+            // We wish to send an append entries request to a peer.
             Some((peer_id, request)) = rpc_rx.append_entries_outbound_rx.recv() => {
 
                 if let Ok(bytes_written) = send_rpc(request, peer_id, socket_write_sender.clone()).await {
@@ -165,6 +212,11 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
                     tracing::warn!("Couldn't send AppendEntriesRPCRequest to peer {:#?}", peer_id);
                 }
             },
+
+            // The Input side of Network IO.
+
+            // Just read the socket and classify each kind of rpc request/response
+            // into its corresponding channels.
             Some((peer_id, data)) = socket_read_receiver.recv() => {
 
                 let total_bytes = data.len();
@@ -241,15 +293,22 @@ where
             socket_read_sender,
             socket_write_receiver,
         );
+
+        let timer = RaftTimer::new(
+            reset_election_timer_rx,
+            election_timer_tx.clone(),
+            150..300
+        );
+
         Self {
             _core: raft,
             _server: server,
+            _timer: timer,
             config,
             election_rx: ElectionRx { 
                 has_become_leader_rx, 
                 has_become_candidate_rx, 
                 election_timer_rx, 
-                reset_election_timer_rx 
             },
             election_tx: ElectionTx {
                 has_become_candidate_tx,
@@ -268,6 +327,7 @@ where
     pub async fn run(self) -> color_eyre::Result<()> {
 
         let raft = self._core.clone();
+        let timer = self._timer;
 
         let rpc_rx = self.rpc_rx;
         let rpc_tx = self.rpc_tx.clone();
@@ -308,6 +368,9 @@ where
             },
             _ = server.run() => {
                 println!("Server run completed.");
+            },
+            _ = timer.run() => {
+                println!("Timer run completed.");
             }
         }
 

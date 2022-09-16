@@ -5,10 +5,11 @@ use draft_core::{
 };
 use draft_server::{set_up_logging, RaftRuntime};
 use tokio::net::UdpSocket;
+use tracing::Level;
 
 #[tokio::main]
 pub async fn main() -> color_eyre::Result<()> {
-    set_up_logging();
+    set_up_logging(Level::TRACE);
 
     let config1: RaftConfig = RaftConfig { 
         server: NodeMetadata { id: 1, addr: "127.0.0.1:9000".parse()? },

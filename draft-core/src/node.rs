@@ -7,11 +7,12 @@ use std::sync::{Arc, Mutex};
 use bytes::Bytes;
 use derive_builder::Builder;
 use hashbrown::HashMap;
+use itertools::Itertools;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{VoteResponse, VoteRequest};
+use crate::{VoteResponse, VoteRequest, AppendEntriesRequest};
 use crate::config::{load_from_file, RaftConfig};
 use crate::storage::Storage;
 
@@ -60,8 +61,8 @@ pub struct PersistentState {
 pub struct VolatileState {
     pub commit_index: usize,
     pub last_applied: usize,
-    pub next_index: Option<HashMap<usize, Option<usize>>>,
-    pub match_index: Option<HashMap<usize, Option<usize>>>,
+    pub next_index: HashMap<usize, usize>,
+    pub match_index: HashMap<usize, usize>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -278,6 +279,8 @@ where
         }
 
         if response.vote_granted {
+            // We got the vote from our peer.
+            
             let mut election_guard = self.election.lock().unwrap();
             election_guard.voter_log.insert(peer_id);
             election_guard.current_term = current_term;
@@ -338,6 +341,64 @@ where
         drop(persistent_state_guard);
         
         VoteRequest { term, candidate_id: self.metadata.id, last_log_index, last_log_term}
+    }
+    
+    pub fn build_heartbeat(&self) -> AppendEntriesRequest {
+            // pub term: usize,
+            // pub leader_id: usize,
+            // pub previous_log_index: usize,
+            // pub previous_log_term: usize,
+            // #[derivative(Default(value = "vec![]"))]
+            // pub entries: Vec<Log>,
+            // pub leader_commit_index: usize,
+        let persistent_state_guard = self.persistent_state.lock().unwrap();
+        let term = persistent_state_guard.current_term;
+        let last_log_index = persistent_state_guard.log.len();
+        let last_log_term = {
+            if persistent_state_guard.log.is_empty() {
+                0
+            }
+            else {
+                persistent_state_guard.log.last().unwrap().term()
+            }
+        };
+        drop(persistent_state_guard);
+
+        let volatile_state_guard = self.volatile_state.lock().unwrap();
+        let leader_commit_index = volatile_state_guard.commit_index;
+        drop(volatile_state_guard);
+
+        AppendEntriesRequest { 
+            term, 
+            leader_id: self.metadata.id, 
+            previous_log_index: last_log_index, 
+            previous_log_term: last_log_term, 
+            entries: vec![], 
+            leader_commit_index
+        }
+    }
+
+    pub fn nodes(&self) -> Vec<usize> {
+        self.cluster.keys().map(|&k| k).collect_vec()
+    }
+
+    pub fn update_next_index_and_match_index_for_follower(
+        &self, 
+        peer_id: usize,
+        next_index: usize,
+        match_index: usize,
+    ) {
+        let mut volatile_state_guard = self.volatile_state.lock().unwrap();
+
+        volatile_state_guard
+        .match_index
+        .insert(peer_id, match_index);
+
+        volatile_state_guard
+        .next_index
+        .insert(peer_id, next_index);
+        
+        drop(volatile_state_guard)
     }
 
 }
