@@ -1,0 +1,16 @@
+# The details for this node.
+[server]
+id = 2
+addr = "127.0.0.1:9001"
+
+# The details for the peers.
+[[peers]]
+
+id = 1
+addr = "127.0.0.1:9000"
+
+[[peers]]
+
+id = 3
+addr = "127.0.0.1:9002"
+
