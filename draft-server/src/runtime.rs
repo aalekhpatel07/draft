@@ -91,7 +91,7 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
                 // because we just received an RPC from the new leader
                 // even if we end up rejecting this RPC.
 
-                raft.reset_election(request.term);
+                raft.reset_election();
 
                 // Reset our timer.
                 election_tx.reset_election_timer_tx.send(())?;
@@ -155,6 +155,7 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
             // Election timer expired. Neither did we receive any AppendEntriesRPC nor
             // did we grant any votes. Trigger the election by stepping up as a candidate.
             Some(_) = election_rx.election_timer_rx.recv() => {
+                tracing::trace!("Election timed out. Becoming candidate.");
                 election_tx.has_become_candidate_tx.send(())?;
             },
             // Rules for Servers (Candidates) (Section 5.2-4)
@@ -181,8 +182,10 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
             // Rules for Servers (Leaders) (Section 5.2-4)
             // We just became a leader.
             Some(_) = election_rx.has_become_leader_rx.recv() => {
+
                 tracing::debug!("Yay! We are now a leader.");
-                
+                raft.handle_becoming_leader();
+
                 let request = raft.build_heartbeat();
 
                 // Send out initial heartbeats to all nodes.

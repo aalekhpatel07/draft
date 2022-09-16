@@ -69,7 +69,6 @@ pub struct VolatileState {
 pub struct Election {
     pub state: ElectionState,
     pub voter_log: hashbrown::HashSet<usize>,
-    pub current_term: usize
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -234,15 +233,37 @@ where
         Self::default().with_config("/etc/raftd/raftd.toml")
     }
 
-    pub fn reset_election(&self, term: usize) {
+    pub fn reset_election(&self) {
         let mut election_guard = self.election.lock().unwrap();
         election_guard.state = ElectionState::Follower;
         election_guard.voter_log = hashbrown::HashSet::default();
-        election_guard.current_term = term;
         drop(election_guard);
-
     }
+    pub fn intialize_leader_volatile_state(&self) {
 
+        let persistent_state_guard = self.persistent_state.lock().unwrap();
+        let last_log_index = persistent_state_guard.log.len();
+
+        drop(persistent_state_guard);
+        
+        let mut match_index_map = HashMap::default();
+        let mut next_index_map = HashMap::default();
+
+        self
+        .nodes()
+        .iter()
+        .for_each(|&peer_id| {
+            next_index_map.insert(peer_id, last_log_index + 1);
+            match_index_map.insert(peer_id, 0);
+        });
+
+        let mut volatile_state_guard = self.volatile_state.lock().unwrap();
+        
+        volatile_state_guard.match_index = match_index_map;
+        volatile_state_guard.next_index = next_index_map;
+
+        drop(volatile_state_guard);
+    }
 
     pub fn handle_request_vote_response(
         &self, 
@@ -267,7 +288,7 @@ where
             
             election_guard.state = ElectionState::Follower;
             election_guard.voter_log = hashbrown::HashSet::default();
-            election_guard.current_term = response.term;
+            // election_guard.current_term = response.term;
 
             drop(election_guard);
             drop(persistent_state_guard);
@@ -280,10 +301,9 @@ where
 
         if response.vote_granted {
             // We got the vote from our peer.
-            
+
             let mut election_guard = self.election.lock().unwrap();
             election_guard.voter_log.insert(peer_id);
-            election_guard.current_term = current_term;
 
             let vote_count = election_guard.voter_log.len();
             drop(election_guard);
@@ -313,16 +333,21 @@ where
         persistent_state_guard.current_term += 1;
         persistent_state_guard.voted_for = Some(self.metadata.id);
 
-        let current_term = persistent_state_guard.current_term;
-        drop(persistent_state_guard);
-
         let mut election_guard = self.election.lock().unwrap();
         
         election_guard.state = ElectionState::Candidate;
-        election_guard.current_term = current_term;
         election_guard.voter_log = hashbrown::HashSet::default();
 
         drop(election_guard);
+
+    }
+
+    pub fn handle_becoming_leader(&self) {
+        let mut election_guard = self.election.lock().unwrap();
+        election_guard.state = ElectionState::Leader;
+        drop(election_guard);
+
+        self.intialize_leader_volatile_state();
 
     }
 
@@ -416,7 +441,7 @@ where
         }
 
         Self {
-            metadata: config.server,
+            metadata: NodeMetadata { id: config.server.id, addr: config.server.addr },
             cluster,
             persistent_state: Arc::new(Mutex::new(PersistentState::default())),
             volatile_state: Arc::new(Mutex::new(VolatileState::default())),

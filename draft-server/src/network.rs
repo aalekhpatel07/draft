@@ -1,5 +1,5 @@
 use std::{net::SocketAddr, time::Duration, io::Write, sync::atomic::AtomicUsize};
-use draft_core::{Cluster, NodeMetadata, config::RaftConfig};
+use draft_core::{Cluster, NodeMetadata, config::{RaftConfig, ServerConfig}};
 use tokio::{sync::mpsc::{self, UnboundedSender, UnboundedReceiver, unbounded_channel}, join, net::ToSocketAddrs};
 use tokio::time::sleep;
 use hashbrown::HashMap;
@@ -116,7 +116,7 @@ impl Network<SocketAddr> for MockUdpSocket {
 
 #[derive(Debug)]
 pub struct RaftServer<N> {
-    pub server: NodeMetadata,
+    pub server: ServerConfig,
 
     pub peers: Arc<Cluster>,
 
@@ -178,7 +178,7 @@ where
         }
     }
 
-    pub fn with_server(self, server: NodeMetadata) -> Self {
+    pub fn with_server(self, server: ServerConfig) -> Self {
         Self {
             server,
             ..self
@@ -192,7 +192,7 @@ where
     ) -> Self {
 
         Self {
-            server: NodeMetadata::default(),
+            server: ServerConfig::default(),
             peers: Arc::new(HashMap::default()),
             socket_addr_to_peer_map: Arc::new(HashMap::default()),
             socket: Arc::new(None),
