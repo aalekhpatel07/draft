@@ -105,7 +105,7 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
                     }
                 };
 
-                tracing::trace!("Received {}Request from peer ({:#?})", rpc_kind_str, peer_id);
+                tracing::debug!("Received {}Request from leader ({:#?})", rpc_kind_str, peer_id);
 
                 let response = raft.handle_append_entries(request);
 
@@ -120,7 +120,7 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
             Some(request) = rpc_rx.request_vote_rx.recv() => {
 
                 let peer_id = request.candidate_id;
-                tracing::trace!("Received VoteRequest from peer ({:#?})", peer_id);
+                tracing::debug!("Received VoteRequest from peer ({:#?})", peer_id);
                 let response = raft.handle_request_vote(request);
 
                 if response.vote_granted {
@@ -155,7 +155,7 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
             // Election timer expired. Neither did we receive any AppendEntriesRPC nor
             // did we grant any votes. Trigger the election by stepping up as a candidate.
             Some(_) = election_rx.election_timer_rx.recv() => {
-                tracing::trace!("Election timed out. Becoming candidate.");
+                tracing::debug!("Election timed out. Becoming candidate.");
                 election_tx.has_become_candidate_tx.send(())?;
             },
             // Rules for Servers (Candidates) (Section 5.2-4)
@@ -201,7 +201,7 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
             // We wish to send a vote request to a peer.
             Some((peer_id, request)) = rpc_rx.request_vote_outbound_rx.recv() => {
                 if let Ok(bytes_written) = send_rpc(request, peer_id, socket_write_sender.clone()).await {
-                    tracing::trace!("Sending RequestVoteRPC ({:#?} bytes) to peer ({:#?})", bytes_written, peer_id);
+                    tracing::debug!("Sending RequestVoteRPC ({:#?} bytes) to peer ({:#?})", bytes_written, peer_id);
                 } else {
                     tracing::warn!("Couldn't send RequestVoteRPC to peer {:#?}", peer_id);
                 }
@@ -210,7 +210,7 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
             Some((peer_id, request)) = rpc_rx.append_entries_outbound_rx.recv() => {
 
                 if let Ok(bytes_written) = send_rpc(request, peer_id, socket_write_sender.clone()).await {
-                    tracing::trace!("Sending AppendEntriesRPCRequest ({:#?} bytes) to peer ({:#?})", bytes_written, peer_id);
+                    tracing::debug!("Sending AppendEntriesRPCRequest ({:#?} bytes) to follower ({:#?})", bytes_written, peer_id);
                 } else {
                     tracing::warn!("Couldn't send AppendEntriesRPCRequest to peer {:#?}", peer_id);
                 }
