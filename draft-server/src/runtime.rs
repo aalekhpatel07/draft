@@ -6,10 +6,11 @@ use draft_core::{
     AppendEntriesResponse, 
     RaftRPC
 };
+use tracing::{Instrument, info_span};
 use crate::{VoteRequest, AppendEntriesRequest, Peer, PeerData, RaftTimer};
 use rand::Rng;
 use serde::{Serialize, de::DeserializeOwned};
-use tokio::{time::{interval, sleep, timeout, Interval, Timeout}, sync::mpsc::{UnboundedReceiver, UnboundedSender}, select};
+use tokio::{time::sleep, sync::mpsc::{UnboundedReceiver, UnboundedSender}, select};
 use crate::{Network, network::RaftServer};
 use tokio::sync::mpsc;
 use std::{sync::{Arc}, net::SocketAddr, fmt::Debug};
@@ -52,7 +53,6 @@ pub struct ElectionTx {
     pub election_timer_tx: UnboundedSender<()>,
     pub reset_election_timer_tx: UnboundedSender<()>,
 }
-
 
 
 #[derive(Debug)]
@@ -104,10 +104,10 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
                         "AppendEntries"
                     }
                 };
-
+                
                 tracing::debug!("Received {}Request from leader ({:#?})", rpc_kind_str, peer_id);
 
-                let response = raft.handle_append_entries(request);
+                let response = raft.handle_append_entries(request).instrument(info_span!("append-entries")).into_inner();
 
                 if let Ok(bytes_written) = send_rpc(response, peer_id, socket_write_sender.clone()).await {
                     tracing::trace!("Sending {}Response ({:#?} bytes) to peer ({:#?})", rpc_kind_str, bytes_written, peer_id);
@@ -121,7 +121,7 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
 
                 let peer_id = request.candidate_id;
                 tracing::debug!("Received VoteRequest from peer ({:#?})", peer_id);
-                let response = raft.handle_request_vote(request);
+                let response = raft.handle_request_vote(request).instrument(info_span!("vote-request")).into_inner();
 
                 if response.vote_granted {
                     // Reset our election timer, by notifying the resetter.
@@ -143,13 +143,12 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
             },
 
             // We received an AppendEntriesResponse from a follower.
-            Some((peer_id, response)) = rpc_rx.append_entries_response_rx.recv() => {
+            Some((_peer_id, _response)) = rpc_rx.append_entries_response_rx.recv() => {
                 /*
                     TODO: Implement the retry-loop by decrementing indices
                           of the last log term, etc.
                 */
-
-
+                // todo!("Implement the retry-loop for when we receive a failed append entries response, or handle state change when it is successful");
 
             },
             // Election timer expired. Neither did we receive any AppendEntriesRPC nor

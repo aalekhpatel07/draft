@@ -1,11 +1,10 @@
-use std::{net::SocketAddr, time::Duration, io::Write, sync::atomic::AtomicUsize};
-use draft_core::{Cluster, NodeMetadata, config::{RaftConfig, ServerConfig}};
-use tokio::{sync::mpsc::{self, UnboundedSender, UnboundedReceiver, unbounded_channel}, join, net::ToSocketAddrs};
+use std::{net::SocketAddr, time::Duration, sync::atomic::AtomicUsize};
+use draft_core::{Cluster, config::{RaftConfig, ServerConfig}};
+use tokio::{sync::mpsc, join, net::ToSocketAddrs};
 use tokio::time::sleep;
 use hashbrown::HashMap;
 use tokio::net::UdpSocket;
 use async_trait::async_trait;
-use rand::{Rng, rngs::ThreadRng};
 use std::sync::{Mutex, Arc};
 
 pub type Peer = usize;
@@ -318,11 +317,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use tokio::*;
     use super::*;
-    use crate::*;
     use crate::utils::set_up_logging;
-    use tracing::{info, trace, Level};
+    use tracing::{trace, Level};
 
 
     #[tokio::test]

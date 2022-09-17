@@ -1,9 +1,8 @@
 use std::{time::Duration, ops::Range};
 
-use futures::{future::{abortable, AbortHandle}, select};
+use futures::future::{abortable, AbortHandle};
 use rand::Rng;
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel, UnboundedSender};
-use std::time::Instant;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::trace;
 
 
@@ -107,6 +106,8 @@ pub mod tests {
     use super::*;
     use crate::utils::set_up_logging;
     use tracing::Level;
+    use tokio::sync::mpsc::unbounded_channel;
+    use std::time::Instant;
 
     #[tokio::test]
     pub async fn it_works() -> color_eyre::Result<()> {
