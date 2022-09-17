@@ -30,8 +30,8 @@ pub struct Args {
     out_directory: PathBuf,
     #[structopt(short="-p", long="--peers", parse(from_str))]
     peers: Vec<Address>,
-    #[structopt(parse(from_occurrences), default_value="0")]
-    verbose: u8
+    // #[structopt(parse(from_occurrences), default_value="0")]
+    // verbose: u8
 }
 
 pub fn build_config(peers: &[Address]) -> Vec<(Address, RaftConfig)> {
@@ -55,12 +55,12 @@ pub fn build_config(peers: &[Address]) -> Vec<(Address, RaftConfig)> {
 
 pub fn main() -> color_eyre::Result<()> {
     let args = Args::from_args();
-    let level = match args.verbose {
-        0 => Level::INFO,
-        1 => Level::DEBUG,
-        _ => Level::TRACE
-    };
-    set_up_logging(level);
+    // let level = match args.verbose {
+    //     0 => Level::INFO,
+    //     1 => Level::DEBUG,
+    //     _ => Level::TRACE
+    // };
+    set_up_logging();
 
     match args.out_directory.exists() {
         true => {
