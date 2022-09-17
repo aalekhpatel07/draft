@@ -1,14 +1,13 @@
-use std::fmt::{Debug, write};
+use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use derive_builder::Builder;
 use hashbrown::HashMap;
 use itertools::Itertools;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 
 use serde::{Deserialize, Serialize};
 

@@ -37,7 +37,6 @@ where
 {
     /// Given a vote request RPC, process the request without making any modifications to the state
     /// as described in Section 5.4.1 and Figure 3.
-    #[instrument(skip(self), target = "rpc::RequestVote")]
     fn try_handle_request_vote(
         &self,
         request: VoteRequest,
@@ -92,7 +91,6 @@ where
             },
         }
     }
-    #[instrument(skip(self), target = "rpc::AppendEntries")]
     fn try_handle_append_entries(
         &self,
         request: AppendEntriesRequest,
@@ -152,6 +150,7 @@ impl<S> RaftRPC for RaftNode<S>
 where
     S: Storage + Default,
 {
+    #[instrument(skip(self), target = "rpc::RequestVote")]
     fn handle_request_vote(&self, request: VoteRequest) -> VoteResponse {
         let requested_term = request.term;
 
@@ -170,6 +169,7 @@ where
         }
     }
 
+    #[instrument(skip(self), target = "rpc::AppendEntries")]
     fn handle_append_entries(
         &self,
         request: AppendEntriesRequest,
