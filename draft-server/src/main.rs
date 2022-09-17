@@ -4,11 +4,10 @@ use draft_core::{
     BufferBackend, 
     config::load_from_file, 
 };
-use draft_server::{RaftRuntime, set_up_logging};
+use draft_server::RaftRuntime;
 use tokio::net::UdpSocket;
 use tracing::Level;
 use structopt::StructOpt;
-
 
 #[derive(StructOpt)]
 #[structopt(name="Raft Server.", about = "The runtime for Raft. (without the state-machine backend for now).")]
@@ -34,7 +33,9 @@ pub async fn main() -> color_eyre::Result<()> {
         }
     };
 
-    set_up_logging(log_level);
+    tracing_subscriber::fmt()
+    .with_max_level(log_level)
+    .init();
     
     let config = load_from_file(opt.config)?;
     let raft: RaftRuntime<BufferBackend, UdpSocket> = RaftRuntime::new(config);
