@@ -364,10 +364,6 @@ where
             election_tx.election_timer_tx.send(()).unwrap();
         });
 
-        let stop_after_timeout = tokio::spawn(async move {
-            sleep(Duration::from_secs(15)).await;
-        });
-
         select! {
             _ = t1 => {
                 println!("The process_rpc loop exited. But how?");
@@ -377,13 +373,8 @@ where
             },
             _ = timer.run() => {
                 println!("Timer run completed.");
-            },
-            _ = stop_after_timeout => {
-                println!("Stopped server after 15 seconds.")
             }
         }
-
-        tracing::info!("Done.");
 
         Ok(())
     }
