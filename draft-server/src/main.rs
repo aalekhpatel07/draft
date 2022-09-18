@@ -9,7 +9,7 @@ use tokio::net::UdpSocket;
 use tracing::{info_span, Instrument, Level};
 use structopt::StructOpt;
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::Registry;
+use tracing_subscriber::{Layer, Registry};
 use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(StructOpt)]
@@ -42,10 +42,12 @@ pub async fn main() -> color_eyre::Result<()> {
         .install_batch(opentelemetry::runtime::Tokio)?;
 
     // The OpenTelemetry layer that listens for tracing calls and turns them into OpenTelemetry requests
-    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer)
+        .with_filter(tracing_subscriber::filter::LevelFilter::from(Level::DEBUG));
 
     // The layer that dumps logs to the console
-    let console_layer = tracing_subscriber::fmt::layer().pretty();
+    let console_layer = tracing_subscriber::fmt::layer().compact()
+        .with_filter(tracing_subscriber::filter::LevelFilter::from(log_level));
 
     // The tracing subscriber that arranges for our traces to go through the layers we want
     let subscriber = Registry::default()
