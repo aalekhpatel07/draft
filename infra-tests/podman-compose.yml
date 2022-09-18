@@ -1,0 +1,30 @@
+services:
+  node1:
+    image: aalekhpatel07/draft-test-node:latest
+    networks:
+      - cluster
+  
+  node2:
+    image: aalekhpatel07/draft-test-node:latest
+    networks:
+      - cluster
+
+  node3:
+    image: aalekhpatel07/draft-test-node:latest
+    networks:
+      - cluster
+
+  supervisor:
+    image: aalekhpatel07/draft-test-supervisor:latest
+    networks:
+      - cluster
+    volumes:
+      - ${PWD}/supervisor:/app
+
+networks:
+  cluster:
+    driver: bridge
+    name: "raft-cluster"
+
+volumes:
+  supervisor:
