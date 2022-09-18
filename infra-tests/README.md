@@ -14,3 +14,12 @@ Then we can talk to the cluster test supervisor based on `aalekhpatel07/draft-te
 
 By this API, we should be able to control network partitions and healing within a Raft cluster via an external observer. This is helpful 
 to simulate network partitions when testing a Raft implementation.
+
+## The API
+
+- Start the cluster with `podman-compose`
+    ```sh
+    podman-compose up -d
+    ```
+
+- Visit the Partition API at `http://localhost:8000/docs`.
