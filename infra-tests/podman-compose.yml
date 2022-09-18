@@ -20,6 +20,8 @@ services:
       - cluster
     volumes:
       - ${PWD}/supervisor:/app
+    ports:
+      - 8000:8000
 
 networks:
   cluster:

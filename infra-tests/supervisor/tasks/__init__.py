@@ -1,7 +1,8 @@
 import pdb
 from sys import stdout
+import sys
 from invoke import task
-from tasks.graph import (
+from supervisor import (
     Graph,
     Node,
     Edge,
@@ -61,23 +62,7 @@ def get_ip(c, peer):
         f"dig {peer} +noall +answer | awk '{{print $5}}'",
         pty=True,
         warn=True,
+        hide=True
     )
+    sys.stdout.write(ip.stdout.strip())
     return ip.stdout.strip()
-
-# @task
-# def build_graph(c):
-#     graph = Graph()
-
-#     peers = [
-#         "tests_node1_1",
-#         "tests_node2_1",
-#         "tests_node3_1",
-#     ]
-#     for (idx, peer) in enumerate(peers):
-#         graph.add_node(Node(id=idx+1, name=peer, ip=get_ip(c, peer), port=9000))
-
-#     graph.build_complete_graph()
-#     rules = graph.get_rules_for(1)
-
-#     print(rules)
-#     return graph

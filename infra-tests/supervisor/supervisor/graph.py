@@ -8,9 +8,6 @@ class Node:
     ip: str
     port: int
 
-    incoming_edges: typing.List['Edge'] = []
-    outgoing_edges: typing.List['Edge'] = []
-
     def __init__(self, id: int, name: str, port: int, ip: str):
         self.id = id
         self.port = port
@@ -24,42 +21,39 @@ class Node:
         return self.id == other.id
 
     def __str__(self) -> str:
-        return f"Node(id={self.id}, name={self.name}, ip={self.ip}, port={self.port})"
+        return str(self.as_dict())
 
-    def add_incoming_edge(self, edge: 'Edge'):
-        self.incoming_edges.append(edge)
+    def as_dict(self) -> typing.Dict[str, typing.Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "ip": self.ip,
+            "port": self.port
+        }
 
-    def add_outgoing_edge(self, edge: 'Edge'):
-        self.incoming_edges.append(edge)
+    # def get_rules(self, all_nodes: typing.Iterable['Node']):
+    #     rules = []
 
-    def remove_outgoing_edge(self, target: 'Node'):
-        maybe_edge = Edge(self, target)
-        self.outgoing_edges = [edge for edge in self.outgoing_edges if edge != maybe_edge]
-    
-    def remove_incoming_edge(self, source: 'Node'):
-        maybe_edge = Edge(source, self)
-        self.incoming_edges = [edge for edge in self.incoming_edges if edge != maybe_edge]
+    #     nodes_without_self = set(node for node in all_nodes if node != self)
+    #     incoming_edges_sources = set(edge.source for edge in self.incoming_edges if edge.source != self)
 
+    #     should_accept_for = incoming_edges_sources
+    #     should_drop_for = nodes_without_self.difference(should_accept_for)
 
-    def get_rules(self, all_nodes: typing.Iterable['Node']):
-        rules = []
+    #     print(
+    #         "should accept for: " + + "should drop for: "
+    #     )
 
-        nodes_without_self = set(node for node in all_nodes if node != self)
-        incoming_edges_sources = set(edge.source for edge in self.incoming_edges)
+    #     for node in should_drop_for:
+    #         rules.append(
+    #             f"firewall-cmd --add-rich-rule='rule family=\"ipv4\" source address=\"{node.ip}/32\" port port=\"{node.port}\" protocol=\"udp\" drop'"
+    #         )
+    #     for node in should_accept_for:
+    #         rules.append(
+    #             f"firewall-cmd --add-rich-rule='rule family=\"ipv4\" source address=\"{node.ip}/32\" port port=\"{node.port}\" protocol=\"udp\" accept'"
+    #         )
 
-        should_drop_for = nodes_without_self.intersection(incoming_edges_sources)
-        should_accept_for = nodes_without_self.difference(incoming_edges_sources)
-
-        for node in should_drop_for:
-            rules.append(
-                f"firewall-cmd --add-rich-rule='rule family=\"ipv4\" source address=\"{node.ip}/32\" port port=\"{node.port}\" protocol=\"udp\" drop'"
-            )
-        for node in should_accept_for:
-            rules.append(
-                f"firewall-cmd --add-rich-rule='rule family=\"ipv4\" source address=\"{node.ip}/32\" port port=\"{node.port}\" protocol=\"udp\" accept'"
-            )
-
-        return rules
+    #     return rules
 
 class Edge:
     source: Node
@@ -77,7 +71,16 @@ class Edge:
         return hash((self.source, self.target))
 
     def __str__(self) -> str:
-        return f"Edge(source={self.source}, target={self.target})"
+        return str(self.as_dict())
+
+    def as_dict(self) -> typing.Dict[str, typing.Any]:
+        return {
+            "source": self.source.as_dict(),
+            "target": self.target.as_dict(),
+        }
+
+    def __eq__(self, other: 'Edge') -> bool:
+        return self.id == other.id
 
 
 class Graph:
@@ -109,7 +112,7 @@ class Graph:
         edge = Edge(source=self.nodes[source], target=self.nodes[target])
         self.edges[edge.id] = edge
 
-        self.adjacency_matrix[source][target] = True
+        self.adjacency_matrix[self.nodes[source]][self.nodes[target]] = True
 
     def remove_edge(self, source: int, target: int):
         if not all((source in self.nodes, target in self.nodes)):
@@ -119,7 +122,7 @@ class Graph:
         if edge.id in self.edges:
             del self.edges[edge.id]
 
-        self.adjacency_matrix[source][target] = False
+        self.adjacency_matrix[self.nodes[source]][self.nodes[target]] = False
 
     def get_all_nodes(self):
         return self.nodes.values()
@@ -129,10 +132,43 @@ class Graph:
         if node_id not in self.nodes:
             return []
         
-        node = self.nodes[node_id]
+        # node = self.nodes[node_id]
         all_nodes = self.get_all_nodes()
 
-        return node.get_rules(all_nodes=all_nodes)
+        incoming_edges_from = set()
+
+        for source_node in self.adjacency_matrix:
+            for target_node in self.adjacency_matrix[source_node]:
+                if self.adjacency_matrix[source_node][target_node]:
+                    if target_node == self.nodes[node_id]:
+                        incoming_edges_from.add(source_node)
+
+        print([str(node) for node in incoming_edges_from])
+
+        disallow_nodes = set(all_nodes) - incoming_edges_from - { self.nodes[node_id] }
+        
+        rules = []
+
+        for node in disallow_nodes:
+            rules.append(
+                f"firewall-cmd --add-rich-rule='rule family=\"ipv4\" source address=\"{node.ip}/32\" port port=\"{node.port}\" protocol=\"udp\" drop'"
+            )
+        for node in incoming_edges_from:
+            rules.append(
+                f"firewall-cmd --add-rich-rule='rule family=\"ipv4\" source address=\"{node.ip}/32\" port port=\"{node.port}\" protocol=\"udp\" accept'"
+            )
+
+        return rules
+
+    def as_dict(self):
+        return {
+            "nodes": [node.as_dict() for node in self.nodes.values()],
+            "edges": [edge.as_dict() for edge in self.edges.values()],
+            "adjacency_matrix": str(self.adjacency_matrix)
+        }
+    
+    def __str__(self):
+        return str(self.as_dict())
 
 
 class Supervisor:
@@ -152,3 +188,24 @@ class Supervisor:
         return self.cluster.get_rules_for(node)
 
 
+    def get_peer_ip(self, node: int):
+        if node in self.cluster.nodes:
+            return self.cluster.nodes[node].ip
+        raise ValueError(f"No node with id: {node} exists.")
+    
+    def get_ips_for_all(self):
+        return {
+            node: self.cluster.nodes[node].ip
+            for node in self.cluster.nodes
+        }
+
+    def get_rules_for_all(self):
+        return {
+            node: self.get_rules_for(node)
+            for node in self.cluster.nodes
+        }
+
+    def as_dict(self):
+        return {
+            "cluster": self.cluster.as_dict()
+        }
