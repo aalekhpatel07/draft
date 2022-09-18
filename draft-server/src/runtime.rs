@@ -7,7 +7,7 @@ use draft_core::{
     RaftRPC
 };
 use tracing::{Instrument, info_span};
-use crate::{VoteRequest, AppendEntriesRequest, Peer, PeerData, RaftTimer};
+use crate::{VoteRequest, AppendEntriesRequest, Peer, PeerData, RaftTimeout};
 use rand::Rng;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::{time::sleep, sync::mpsc::{UnboundedReceiver, UnboundedSender}, select};
@@ -59,7 +59,7 @@ pub struct ElectionTx {
 pub struct RaftRuntime<S, N> {
     _core: Arc<RaftNode<S>>,
     _server: RaftServer<N>,
-    _timer: RaftTimer,
+    _timer: RaftTimeout,
     pub config: RaftConfig,
     rpc_rx: RPCRx,
     rpc_tx: RPCTx,
@@ -296,7 +296,7 @@ where
             socket_write_receiver,
         );
 
-        let timer = RaftTimer::new(
+        let timer = RaftTimeout::new(
             reset_election_timer_rx,
             election_timer_tx.clone(),
             150..300
