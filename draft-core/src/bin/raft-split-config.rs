@@ -1,22 +1,23 @@
 use structopt::StructOpt;
-use std::{net::SocketAddr, path::PathBuf, ops::Add, fs::File, io::Write};
+use std::{net::{SocketAddr, ToSocketAddrs}, path::PathBuf, fs::File, io::Write};
 use draft_core::{config::RaftConfig, config::ServerConfig, utils::set_up_logging, NodeMetadata};
-use std::fs::{create_dir_all};
-use tracing::{Level, info, warn, debug, trace, error};
+use std::fs::create_dir_all;
+use tracing::debug;
 use color_eyre::eyre::eyre;
-
 
 #[derive(Debug, Clone)]
 pub struct Address(SocketAddr);
 
-impl From<&str> for Address {
+impl From<&str> for Address
+{
     fn from(s: &str) -> Self {
-        if let Ok(socket_addr) = s.parse::<SocketAddr>() {
-            Address(socket_addr)
-        }else {
-            let full_path: SocketAddr = format!("127.0.0.1:{s}").parse().unwrap();
-            Address(full_path)
+        if let Ok(mut maybe_socket) = ToSocketAddrs::to_socket_addrs(s) {
+            if let Some(socket_addr) = maybe_socket.next() {
+                return Address(socket_addr)
+            }
         }
+        let full_path: SocketAddr = format!("127.0.0.1:{s}").parse().unwrap();
+        Address(full_path)
     }
 }
 

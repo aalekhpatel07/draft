@@ -23,13 +23,16 @@ where
 }
 
 #[async_trait]
-impl Network<SocketAddr> for UdpSocket
+impl<A> Network<A> for UdpSocket
+where
+    A: ToSocketAddrs + Send + Sync + 'static
+
 {
-    async fn bind(addr: SocketAddr) -> std::io::Result<Self> {
+    async fn bind(addr: A) -> std::io::Result<Self> {
         UdpSocket::bind(addr).await
     }
 
-    async fn send_to(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize> {
+    async fn send_to(&self, buf: &[u8], target: A) -> std::io::Result<usize> {
         self.send_to(buf, target).await
     }
     async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
