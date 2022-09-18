@@ -1,0 +1,35 @@
+services:
+  node1:
+    image: aalekhpatel07/draft-test-node:latest
+    networks:
+      - cluster
+    privileged: true
+
+  node2:
+    image: aalekhpatel07/draft-test-node:latest
+    networks:
+      - cluster
+    privileged: true
+
+  node3:
+    image: aalekhpatel07/draft-test-node:latest
+    networks:
+      - cluster
+    privileged: true
+
+  supervisor:
+    image: aalekhpatel07/draft-test-supervisor:latest
+    networks:
+      - cluster
+    volumes:
+      - ${PWD}/supervisor:/app
+    ports:
+      - 8000:8000
+
+networks:
+  cluster:
+    driver: bridge
+    name: "raft-cluster"
+
+volumes:
+  supervisor:

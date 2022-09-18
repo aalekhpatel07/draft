@@ -1,0 +1,4 @@
+invoke
+
+fastapi
+uvicorn[standard]
