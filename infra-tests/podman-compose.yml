@@ -3,16 +3,19 @@ services:
     image: aalekhpatel07/draft-test-node:latest
     networks:
       - cluster
-  
+    privileged: true
+
   node2:
     image: aalekhpatel07/draft-test-node:latest
     networks:
       - cluster
+    privileged: true
 
   node3:
     image: aalekhpatel07/draft-test-node:latest
     networks:
       - cluster
+    privileged: true
 
   supervisor:
     image: aalekhpatel07/draft-test-supervisor:latest

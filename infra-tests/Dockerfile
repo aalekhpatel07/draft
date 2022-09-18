@@ -3,7 +3,6 @@ FROM fedora
 RUN dnf update -y && dnf upgrade -y
 
 RUN dnf install -y \
-    firewalld \
     vim \
     curl \
     bat \
@@ -13,9 +12,10 @@ RUN dnf install -y \
     openssh \
     openssh-server \
     openssh-clients \
-    passwd
+    passwd \
+    iptables
 
-RUN dnf clean all; systemctl enable firewalld;
+RUN dnf clean all;
 
 # So that root has a password of "root".
 RUN echo "root" | passwd "root" --stdin

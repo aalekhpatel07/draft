@@ -1,68 +1,82 @@
-import pdb
-from sys import stdout
-import sys
 from invoke import task
-from supervisor import (
-    Graph,
-    Node,
-    Edge,
-    Supervisor
-)
 
-PREFIX = "/usr/bin/sshpass -p root ssh root"
+
+SSH_PREFIX = "/usr/bin/sshpass -p root ssh root"
+
 
 def command(cmd: str) -> str:
-    return f"{PREFIX}@{{}} {cmd}"
+    """
+    Build a command to be run on a peer through ssh.
+    """
+    return f"{SSH_PREFIX}@{{}} {cmd}"
 
-
-@task(iterable=['peers'])
-def list_firewall_services(c, peers=None):
-
-    for peer in peers:
-        c.run(
-            command("firewall-cmd --list-services").format(peer), 
-            pty=True, 
-            warn=True
-        )
-
-@task(iterable=['peers'])
-def reset_firewall_services(c, peers=None):
-
-    for peer in peers:
-        c.run(
-            command(
-                '"for srv in \$(firewall-cmd --list-services); do firewall-cmd --remove-service=\$srv; done"',
-            )
-            .format(peer),
-            pty=True,
-            warn=True
-        )
-
-        c.run(
-            command(
-                "firewall-cmd --add-service={{ssh,mdns,dhcpv6-client}}",
-            )
-            .format(peer),
-            pty=True,
-            warn=True
-        )
-
-        c.run(
-            command(
-                "firewall-cmd --runtime-to-permanent"
-            )
-            .format(peer),
-            pty=True,
-            warn=True
-        )
 
 @task
-def get_ip(c, peer):
-    ip = c.run(
-        f"dig {peer} +noall +answer | awk '{{print $5}}'",
+def get_iptables(c, peer=None):
+    """
+    Given peer, run the "iptables -L OUTPUT -n" command on it.
+    """
+    full_cmd = command(
+        f"iptables -L OUTPUT -n"
+    ).format(peer)
+
+    result = c.run(
+        full_cmd,
         pty=True,
-        warn=True,
-        hide=True
+        warn=False
     )
-    sys.stdout.write(ip.stdout.strip())
-    return ip.stdout.strip()
+    print(result.stdout.strip())
+    return
+
+@task
+def restore_iptables(c, peer=None):
+    """
+    Given peer, run the "iptables -F" command on it.
+    """
+    full_cmd = command(
+        f"iptables -F"
+    ).format(peer)
+
+    result = c.run(
+        full_cmd,
+        pty=True,
+        warn=True
+    )
+    print(result.stdout.strip())
+
+
+@task
+def drop_from(c, source_ip=None, target_peer_name=None):
+    """
+    Given a source_ip, and a target_peer hostname, 
+    run the "iptables -A OUTPUT -s <source_ip> -j DROP " 
+    command on the target peer.
+    """
+    full_cmd = command(
+        f"iptables -A OUTPUT -s {source_ip} -j DROP"
+    ).format(target_peer_name)
+
+    result = c.run(
+        full_cmd,
+        pty=True,
+        warn=True
+    )
+    print(result.stdout.strip())
+
+@task
+def restore_from(c, source_ip=None, target_peer_name=None):
+    """
+    Given a source_ip, and a target_peer hostname, 
+    run the "iptables -D OUTPUT -s <source_ip> -j DROP " 
+    command on the target peer.
+    """
+    full_cmd = command(
+        f"iptables -D OUTPUT -s {source_ip} -j DROP"
+    ).format(target_peer_name)
+
+    result = c.run(
+        full_cmd,
+        pty=True,
+        warn=True
+    )
+    print(result.stdout.strip())
