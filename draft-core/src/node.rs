@@ -258,6 +258,7 @@ mod tests {
         // {}
     }
 
+    #[ignore]
     #[test]
     #[cfg(not(tarpaulin))]
     fn new_works() {

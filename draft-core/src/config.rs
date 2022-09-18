@@ -73,6 +73,7 @@ pub mod tests {
         );
     }
 
+    #[ignore]
     #[test]
     #[cfg(not(tarpaulin))]
     pub fn config_from_file() {
