@@ -1,6 +1,7 @@
 # A testing framework that allows simulation of network failures.
 
-Dynamically configure firewalld through a cluster supervisor (exposed via a RESTful api) to implement the Partition API in [this paper](https://www.scs.stanford.edu/14au-cs244b/labs/projects/RaftMonkey-Chakoumakos-Trusheim-revised.pdf).
+Dynamically configure iptables for nodes of a cluster from a cluster supervisor (exposed via a RESTful api). 
+Partial implementation of the Partition API described in [this paper](https://www.scs.stanford.edu/14au-cs244b/labs/projects/RaftMonkey-Chakoumakos-Trusheim-revised.pdf).
 
 # Usage
 
@@ -11,5 +12,5 @@ can be set up before running `podman-compose up -d`.
 Then we can talk to the cluster test supervisor based on `aalekhpatel07/draft-test-supervisor:latest` that runs a FastAPI server which lets us execute commands like 
 `partition(node1, node2)`. These commands will cause a network partition between the peers with the given ids, etc.
 
-The full API is WIP but when ready, we should be able to control network partitions and heals of a Raft cluster from an external entity. This is helpful 
+By this API, we should be able to control network partitions and healing within a Raft cluster via an external observer. This is helpful 
 to simulate network partitions when testing a Raft implementation.
