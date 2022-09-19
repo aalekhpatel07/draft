@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use std::{fs::read_to_string, path::{Path, PathBuf}, net::SocketAddr};
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ServerConfig {
     pub id: usize,
     pub addr: SocketAddr,
@@ -20,7 +20,7 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct RaftConfig {
     pub server: ServerConfig,
     pub peers: Vec<NodeMetadata>,

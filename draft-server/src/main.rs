@@ -23,6 +23,7 @@ pub struct Opt {
 }
 
 
+#[cfg(not(tarpaulin_include))]
 #[tokio::main]
 pub async fn main() -> color_eyre::Result<()> {
 
