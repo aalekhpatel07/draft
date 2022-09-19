@@ -15,7 +15,15 @@ rmp-serde = { version = "*" }
 serde = { version = "*", features = ["derive"] }
 
 tracing = { version = "*" }
-tracing-subscriber = { version = "0.3.1" }
+tracing-subscriber = { version = "*" }
+# tracing-opentelemetry is only up to 0.17, so we have to peg opentelemetry and
+# opentelemetry-jaeger to older versions to stay compatible
+tracing-opentelemetry = "0.17.4"
+opentelemetry = { version = "0.17.0", features = ["rt-tokio"] }
+opentelemetry-jaeger = { version = "0.16.0", features = ["rt-tokio"] }
 hashbrown = "0.12.3"
 async-trait = "0.1.57"
 rand = "0.8.5"
+serde_json = "1.0.85"
+futures = "0.3.24"
+structopt = "0.3.26"

@@ -1,9 +1,14 @@
 mod append_entries;
 mod request_vote;
-pub mod utils;
+mod request_vote_response;
+mod append_entries_response;
+mod utils;
 
 pub use append_entries::*;
 pub use request_vote::*;
+pub use request_vote_response::*;
+pub use append_entries_response::*;
+pub use utils::*;
 
 use crate::{node::RaftNode, Storage};
 use tracing::{error, instrument};
@@ -32,11 +37,10 @@ pub trait RaftRPC {
 
 impl<S> TryRaftRPC for RaftNode<S>
 where
-    S: Storage,
+    S: Storage + Default,
 {
     /// Given a vote request RPC, process the request without making any modifications to the state
     /// as described in Section 5.4.1 and Figure 3.
-    #[instrument(skip(self), target = "rpc::RequestVote")]
     fn try_handle_request_vote(
         &self,
         request: VoteRequest,
@@ -91,7 +95,6 @@ where
             },
         }
     }
-    #[instrument(skip(self), target = "rpc::AppendEntries")]
     fn try_handle_append_entries(
         &self,
         request: AppendEntriesRequest,
@@ -149,8 +152,9 @@ where
 
 impl<S> RaftRPC for RaftNode<S>
 where
-    S: Storage,
+    S: Storage + Default,
 {
+    #[instrument(skip(self), target = "rpc::RequestVote")]
     fn handle_request_vote(&self, request: VoteRequest) -> VoteResponse {
         let requested_term = request.term;
 
@@ -169,6 +173,7 @@ where
         }
     }
 
+    #[instrument(skip(self), target = "rpc::AppendEntries")]
     fn handle_append_entries(
         &self,
         request: AppendEntriesRequest,
@@ -196,7 +201,6 @@ where
 mod tests {
     pub use super::*;
     pub use crate::*;
-    use crate::rpc::utils::*;
     use std::sync::{Arc, Mutex};
 
     #[test]

@@ -1,4 +1,3 @@
-use color_eyre;
 use std::sync::Once;
 
 static INIT: Once = Once::new();

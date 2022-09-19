@@ -1,11 +1,10 @@
-use std::{net::SocketAddr, time::Duration, io::Write, sync::atomic::AtomicUsize};
-use draft_core::{Cluster, NodeMetadata, config::RaftConfig};
-use tokio::{sync::mpsc::{self, UnboundedSender, UnboundedReceiver, unbounded_channel}, join, net::ToSocketAddrs};
+use std::{net::SocketAddr, time::Duration, sync::atomic::AtomicUsize};
+use draft_core::{Cluster, config::{RaftConfig, ServerConfig}};
+use tokio::{sync::mpsc, join, net::ToSocketAddrs};
 use tokio::time::sleep;
 use hashbrown::HashMap;
 use tokio::net::UdpSocket;
 use async_trait::async_trait;
-use rand::{Rng, rngs::ThreadRng};
 use std::sync::{Mutex, Arc};
 
 pub type Peer = usize;
@@ -24,13 +23,16 @@ where
 }
 
 #[async_trait]
-impl Network<SocketAddr> for UdpSocket
+impl<A> Network<A> for UdpSocket
+where
+    A: ToSocketAddrs + Send + Sync + 'static
+
 {
-    async fn bind(addr: SocketAddr) -> std::io::Result<Self> {
+    async fn bind(addr: A) -> std::io::Result<Self> {
         UdpSocket::bind(addr).await
     }
 
-    async fn send_to(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize> {
+    async fn send_to(&self, buf: &[u8], target: A) -> std::io::Result<usize> {
         self.send_to(buf, target).await
     }
     async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
@@ -116,7 +118,7 @@ impl Network<SocketAddr> for MockUdpSocket {
 
 #[derive(Debug)]
 pub struct RaftServer<N> {
-    pub server: NodeMetadata,
+    pub server: ServerConfig,
 
     pub peers: Arc<Cluster>,
 
@@ -126,11 +128,14 @@ pub struct RaftServer<N> {
 
     // The underlying socket for network IO.
     pub socket: Arc<Option<N>>,
-    // RaftCore keeps the receiver end for the response.
-    pub rpc_response_sender: Arc<mpsc::UnboundedSender<PeerData>>,
 
-    // RaftCore keeps the sender end for the request.
-    pub rpc_request_receiver: mpsc::UnboundedReceiver<PeerData>
+    /// The receiver gets the data written to the socket
+    /// by a peer.
+    pub peer_data_sender: Arc<mpsc::UnboundedSender<PeerData>>,
+
+    /// The sender sends some data to be written to the socket
+    /// of a given peer.
+    pub socket_write_receiver: mpsc::UnboundedReceiver<PeerData>
 }
 
 pub fn get_socket_from_peer(peers: Arc<Cluster>, peer_id: Peer) -> Option<SocketAddr> {
@@ -175,7 +180,7 @@ where
         }
     }
 
-    pub fn with_server(self, server: NodeMetadata) -> Self {
+    pub fn with_server(self, server: ServerConfig) -> Self {
         Self {
             server,
             ..self
@@ -184,17 +189,17 @@ where
 
     pub fn new(
         config: RaftConfig,
-        rpc_response_sender: mpsc::UnboundedSender<PeerData>,
-        rpc_request_receiver: mpsc::UnboundedReceiver<PeerData>
+        peer_data_sender: mpsc::UnboundedSender<PeerData>,
+        socket_write_receiver: mpsc::UnboundedReceiver<PeerData>
     ) -> Self {
 
         Self {
-            server: NodeMetadata::default(),
+            server: ServerConfig::default(),
             peers: Arc::new(HashMap::default()),
             socket_addr_to_peer_map: Arc::new(HashMap::default()),
             socket: Arc::new(None),
-            rpc_request_receiver,
-            rpc_response_sender: Arc::new(rpc_response_sender)
+            socket_write_receiver,
+            peer_data_sender: Arc::new(peer_data_sender)
         }.with_config(config)
     }
 
@@ -211,7 +216,7 @@ where
     pub async fn run(mut self) -> color_eyre::Result<()> {
         self.init().await?;
 
-        let rpc_response_sender = self.rpc_response_sender.clone();
+        let rpc_response_sender = self.peer_data_sender.clone();
         let socket_addr_to_peer_map = self.socket_addr_to_peer_map.clone();
         let socket = self.socket.clone();
         let peers = self.peers.clone();
@@ -222,13 +227,13 @@ where
         // So that anything the socket receives gets passed to the channel with the correct
         // peer identified.
         let task1 = tokio::spawn(async move {
-            RaftServer::listen_for_rpc_response(socket_addr_to_peer_map, socket, rpc_response_sender).await
+            RaftServer::listen_for_socket_read(socket_addr_to_peer_map, socket, rpc_response_sender).await
         });
         let socket = self.socket.clone();
 
         let task2 = tokio::spawn(async move {
             // Save to move self in here because we don't need it anymore.
-            RaftServer::listen_for_rpc_requests(self.rpc_request_receiver, peers, socket).await
+            RaftServer::listen_for_socket_write(self.socket_write_receiver, peers, socket).await
         });
         tracing::info!("Started Raft server for node (id: {}, ip: {})", server_id, server_addr);
 
@@ -240,13 +245,13 @@ where
         Ok(())
     }
 
-    pub async fn listen_for_rpc_requests(
-        mut rpc_request_receiver: mpsc::UnboundedReceiver<PeerData>,
+    pub async fn listen_for_socket_write(
+        mut socket_write_receiver: mpsc::UnboundedReceiver<PeerData>,
         peers: Arc<Cluster>,
         socket: Arc<Option<N>>,
     ) -> color_eyre::Result<()> {
 
-        while let Some((peer_id, peer_data)) = rpc_request_receiver.recv().await {
+        while let Some((peer_id, peer_data)) = socket_write_receiver.recv().await {
             tracing::trace!("Handling rpc request for peer ({}) => into socket.", peer_id);
             match get_socket_from_peer(peers.clone(), peer_id) {
 
@@ -273,10 +278,10 @@ where
         Ok(())
     }
 
-    pub async fn listen_for_rpc_response(
+    pub async fn listen_for_socket_read(
         socket_addr_to_peer_map: Arc<HashMap<SocketAddr, Peer>>, 
         socket: Arc<Option<N>>,
-        rpc_response_sender: Arc<mpsc::UnboundedSender<PeerData>>
+        peer_data_sender: Arc<mpsc::UnboundedSender<PeerData>>
     ) -> color_eyre::Result<()> {
 
         let socket = 
@@ -294,7 +299,7 @@ where
                     
                     match socket_addr_to_peer_map.get(&addr) {
                         Some(&peer) => {
-                            rpc_response_sender.send((peer, data.to_vec()))?;
+                            peer_data_sender.send((peer, data.to_vec()))?;
                         },
                         None => {
                             tracing::warn!("Received data from an unknown client {:#?} (i.e. not part of our cluster), so ignoring.", addr);
@@ -315,24 +320,22 @@ where
 
 #[cfg(test)]
 mod tests {
-    use tokio::*;
     use super::*;
-    use crate::*;
     use crate::utils::set_up_logging;
-    use tracing::{info, trace};
+    use tracing::{trace, Level};
 
 
     #[tokio::test]
     async fn server_init_works() -> color_eyre::Result<()> {
-        set_up_logging();
-        let (_rpc_request_sender, rpc_request_receiver) = mpsc::unbounded_channel();
-        let (rpc_response_sender, _rpc_response_receiver) = mpsc::unbounded_channel();
+        set_up_logging(Level::TRACE);
+        let (_socket_write_sender, socket_write_receiver) = mpsc::unbounded_channel();
+        let (peer_data_sender, _peer_data_receiver) = mpsc::unbounded_channel();
         let config = draft_core::config::RaftConfig::default();
 
         let mut server: RaftServer<MockUdpSocket> = RaftServer::new(
             config,
-            rpc_response_sender,
-            rpc_request_receiver
+            peer_data_sender,
+            socket_write_receiver
         );
         assert!(server.init().await.is_ok());
         let socket = (*server.socket).as_ref().unwrap();
@@ -343,15 +346,15 @@ mod tests {
     #[tokio::test]
     async fn server_run_works() -> color_eyre::Result<()> {
 
-        set_up_logging();
-        let (rpc_request_sender, rpc_request_receiver) = mpsc::unbounded_channel();
-        let (rpc_response_sender, mut rpc_response_receiver) = mpsc::unbounded_channel();
+        set_up_logging(Level::TRACE);
+        let (socket_write_sender, socket_write_receiver) = mpsc::unbounded_channel();
+        let (peer_data_sender, mut peer_data_receiver) = mpsc::unbounded_channel();
         let config = draft_core::config::RaftConfig::default();
 
         let mut server: RaftServer<MockUdpSocket> = RaftServer::new(
             config,
-            rpc_response_sender,
-            rpc_request_receiver
+            peer_data_sender,
+            socket_write_receiver
         );
         server.init().await?;
 
@@ -361,14 +364,14 @@ mod tests {
         let mut requests = Vec::new();
 
         for _ in 0..10 {
-            rpc_request_sender.send((2, vec![1, 2, 3, 4, 5]))?;
+            socket_write_sender.send((2, vec![1, 2, 3, 4, 5]))?;
             requests.push(vec![1, 2, 3, 4, 5]);
         }
 
         hmap.insert("127.0.0.1:9001".parse()?, requests);
 
         tokio::spawn(async move {
-            while let Some((node_id, rpc_request_data)) = rpc_response_receiver.recv().await {
+            while let Some((node_id, rpc_request_data)) = peer_data_receiver.recv().await {
                 trace!("Received some data (from {}) {:#?}", node_id, rpc_request_data);
                 trace!("Socket: {:#?}", socket);
                     let socket = (*socket).as_ref().unwrap();
@@ -376,10 +379,9 @@ mod tests {
             }
         });
 
-
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            drop(rpc_request_sender);
+            drop(socket_write_sender);
         });
 
         server.run().await?;

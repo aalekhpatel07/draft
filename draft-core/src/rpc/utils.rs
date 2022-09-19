@@ -1,10 +1,11 @@
+use crate::{Election, ElectionState, VoteResponse, AppendEntriesResponse};
 use crate::node::{PersistentState, VolatileState};
 use crate::rpc::{AppendEntriesRequest, VoteRequest};
 use bytes::Bytes;
 use hashbrown::HashMap;
 
 #[allow(dead_code)]
-pub(crate) fn vote_request(
+pub fn vote_request(
     term: usize,
     candidate_id: usize,
     last_log_index: usize,
@@ -18,8 +19,18 @@ pub(crate) fn vote_request(
     }
 }
 
+
 #[allow(dead_code)]
-pub(crate) fn append_entries_request(
+pub fn vote_response(
+    term: usize,
+    vote_granted: bool
+) -> VoteResponse {
+    VoteResponse { term, vote_granted }
+}
+
+
+#[allow(dead_code)]
+pub fn append_entries_request(
     term: usize,
     leader_id: usize,
     previous_log_index: usize,
@@ -39,6 +50,15 @@ pub(crate) fn append_entries_request(
     }
 }
 
+
+#[allow(dead_code)]
+pub fn append_entries_response(
+    term: usize,
+    success: bool
+) -> AppendEntriesResponse {
+    AppendEntriesResponse { term, success }
+}
+
 #[allow(dead_code)]
 pub(crate) fn persistent_state(
     current_term: usize,
@@ -55,16 +75,35 @@ pub(crate) fn persistent_state(
 }
 
 #[allow(dead_code)]
+pub(crate) fn election(
+    election_state: ElectionState,
+    voter_log: Vec<usize>
+) -> Election {
+    Election { state: election_state, voter_log: voter_log.into_iter().collect()}
+}
+
+
+#[allow(dead_code)]
 pub(crate) fn volatile_state(
     commit_index: usize,
     last_applied: usize,
-    next_index: Option<HashMap<usize, Option<usize>>>,
-    match_index: Option<HashMap<usize, Option<usize>>>,
+    next_index: Option<HashMap<usize, usize>>,
+    match_index: Option<HashMap<usize, usize>>,
 ) -> VolatileState {
+
+    let next_index_value = match next_index {
+        Some(hmap) => hmap,
+        None => HashMap::default()
+    };
+    let match_index_value = match match_index {
+        Some(hmap) => hmap,
+        None => HashMap::default()
+    };
+
     VolatileState {
         commit_index,
         last_applied,
-        next_index,
-        match_index,
+        next_index: next_index_value,
+        match_index: match_index_value,
     }
 }
