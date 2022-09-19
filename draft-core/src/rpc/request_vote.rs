@@ -187,7 +187,6 @@ mod tests {
 
     #[allow(unused_imports)]
     pub use crate::rpc::utils::*;
-    use tracing::Level;
 
     #[test]
     fn serialize_to_string_works() {

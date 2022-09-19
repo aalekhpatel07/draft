@@ -1,9 +1,13 @@
 mod append_entries;
 mod request_vote;
+mod request_vote_response;
+mod append_entries_response;
 mod utils;
 
 pub use append_entries::*;
 pub use request_vote::*;
+pub use request_vote_response::*;
+pub use append_entries_response::*;
 pub use utils::*;
 
 use crate::{node::RaftNode, Storage};

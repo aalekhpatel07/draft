@@ -1,4 +1,3 @@
-use tracing::Level;
 use std::sync::Once;
 
 static INIT: Once = Once::new();

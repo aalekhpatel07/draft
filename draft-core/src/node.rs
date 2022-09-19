@@ -1,6 +1,5 @@
 use std::fmt::Debug;
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -12,8 +11,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use serde::{Deserialize, Serialize};
 
 use crate::{VoteResponse, VoteRequest, AppendEntriesRequest};
-use crate::config::{load_from_file, RaftConfig};
+use crate::config::RaftConfig;
 use crate::storage::Storage;
+use crate::rpc::handle_request_vote_response;
+
 
 pub type Log = (usize, Bytes);
 pub type Port = u16;
@@ -210,11 +211,9 @@ where
         )
     }
 
-    pub fn with_config<P>(mut self, path_to_config: P) -> Self
-    where
-        P: AsRef<Path>,
+    pub fn with_config(mut self, config: RaftConfig) -> Self
     {
-        let config = load_from_file(path_to_config).expect("Failed to load from config file.");
+        // let config = load_from_file(path_to_config).expect("Failed to load from config file.");
 
         self.metadata.id = config.server.id;
         self.metadata.addr = config.server.addr;
@@ -229,7 +228,7 @@ where
     }
 
     pub fn new() -> Self {
-        Self::default().with_config("/etc/raftd/raftd.toml")
+        Self::default().with_config(RaftConfig::default())
     }
 
     pub fn reset_election(&self) {
@@ -270,60 +269,8 @@ where
         response: VoteResponse,
         has_become_leader_tx: UnboundedSender<()>
     ) {
-        // We got a VoteResponse.
-
-        let persistent_state_guard = self.persistent_state.lock().unwrap();
-        let current_term = persistent_state_guard.current_term;
-        drop(persistent_state_guard);
-
-        // Update our current_term, if we're out-of-date.
-        if response.term > current_term {
-
-            let mut persistent_state_guard = self.persistent_state.lock().unwrap();
-            persistent_state_guard.current_term = response.term;
-
-            // Respectfully become a follower, since we're out-of-date.
-            let mut election_guard = self.election.lock().unwrap();
-            
-            election_guard.state = ElectionState::Follower;
-            election_guard.voter_log = hashbrown::HashSet::default();
-            // election_guard.current_term = response.term;
-
-            drop(election_guard);
-            drop(persistent_state_guard);
-
-            if let Err(e) = self.save() {
-                tracing::error!("{}", e.to_string());
-            }
-            return
-        }
-
-        if response.vote_granted {
-            // We got the vote from our peer.
-
-            let mut election_guard = self.election.lock().unwrap();
-            election_guard.voter_log.insert(peer_id);
-
-            let vote_count = election_guard.voter_log.len();
-            drop(election_guard);
-
-            let majority_vote_threshold = (self.cluster.len() + 1) / 2;
-            if vote_count >= majority_vote_threshold {
-                tracing::trace!("Received a majority of the votes. Becoming the leader.");
-                let mut election_guard = self.election.lock().unwrap();
-                election_guard.state = ElectionState::Leader;
-                drop(election_guard);
-
-                // Notify ourselves of our election win.
-                // And begin sending AppendEntriesRPCs.
-                if let Err(e) = has_become_leader_tx.send(()) {
-                    tracing::error!("Error sending a notification of our election win: {}", e.to_string());
-                }
-            }
-        }
-        // if let Err(e) = self.save() {
-        //     tracing::error!("{}", e.to_string());
-        // }
+        // This is infallible, really.
+        handle_request_vote_response(self, response, peer_id, has_become_leader_tx).unwrap();
     }
 
     pub fn handle_becoming_candidate(&self) {
@@ -335,7 +282,11 @@ where
         let mut election_guard = self.election.lock().unwrap();
         
         election_guard.state = ElectionState::Candidate;
-        election_guard.voter_log = hashbrown::HashSet::default();
+        
+        let mut voter_log = hashbrown::HashSet::default();
+        voter_log.insert(self.metadata.id);
+
+        election_guard.voter_log = voter_log;
 
         drop(election_guard);
 
@@ -452,48 +403,18 @@ where
 
 #[cfg(test)]
 mod tests {
+    use hashbrown::HashSet;
+
     use super::*;
-    use std::io::Read;
-    use std::net::TcpListener;
     use std::{fmt::Debug, path::PathBuf};
 
     // use crate::UdpBackend;
     use crate::storage::{BufferBackend, FileStorageBackend};
     // use crate::network::{DummyBackend as DummyNetworkBackend};
-    use std::sync::Once;
 
-    static INIT: Once = Once::new();
 
-    fn setup_server() {
-        INIT.call_once(|| start_tcp_server_on_port("127.0.0.1:9001".parse().unwrap()));
-    }
-
-    fn start_tcp_server_on_port(addr: SocketAddr) {
-        let listener = TcpListener::bind(addr).unwrap();
-
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(mut stream) => {
-                        std::thread::spawn(move || {
-                            let mut s: String = String::new();
-                            stream.read_to_string(&mut s).unwrap();
-                            println!("{:#?}", s);
-                            s.clear();
-                        });
-                    }
-                    Err(_) => {}
-                }
-            }
-        });
-
-    }
-
-    #[ignore]
     #[test]
-    #[cfg(not(tarpaulin))]
     fn new_works() {
-        setup_server();
         let node: RaftNode<BufferBackend> = RaftNode::new();
 
         assert_eq!(node.metadata.addr, "127.0.0.1:9000".parse().unwrap());
@@ -519,15 +440,6 @@ mod tests {
         assert_eq!(node.cluster, hmap);
     }
 
-    // #[test]
-    // fn connect_works() {
-    //     setup_server();
-    //     let node: RaftNode<BufferBackend, UdpBackend> = RaftNode::new();
-    //     assert!(node.cluster.contains_key(&2));
-    //     node.network.connect(2).expect("Couldn't connect to node with id 2.");
-    //     let data = "Hello raft!\n".as_bytes();
-    //     node.network.write(2, &data).expect("Failed to write.");
-    // }
     #[test]
     fn default_node_has_log_path_configured() {
         let node: RaftNode<FileStorageBackend> = RaftNode::default();
@@ -576,5 +488,223 @@ mod tests {
     #[test]
     fn save_to_buffer_works() {
         save_works::<BufferBackend>();
+    }
+
+    #[test]
+    fn with_config_works() {
+        let mut config = RaftConfig::default();
+        config.server.id = 10;
+
+        let mut raft = RaftNode::<BufferBackend>::default();
+        raft = raft.with_config(config);
+
+        assert_eq!(raft.metadata.id, 10);
+
+    }
+
+    #[test]
+    fn reset_election_works() 
+    {
+
+        let raft = RaftNode::<BufferBackend>::new();
+
+        let mut starting_voter_log = HashSet::default();
+        starting_voter_log.insert(2usize);
+
+        let starting_state = ElectionState::Leader;
+
+        let mut election_guard = raft.election.lock().unwrap();
+        election_guard.state = starting_state;
+        election_guard.voter_log = starting_voter_log.clone();
+        drop(election_guard);
+
+        assert_eq!(raft.election.lock().unwrap().state, starting_state);
+        assert_eq!(raft.election.lock().unwrap().voter_log, starting_voter_log);
+
+        raft.reset_election();
+
+        assert_eq!(raft.election.lock().unwrap().state, ElectionState::Follower);
+        assert_eq!(raft.election.lock().unwrap().voter_log, HashSet::default());
+        
+    }
+
+    #[test]
+    fn initialize_leader_volatile_state() 
+    {
+        let raft = RaftNode::<BufferBackend>::new();
+        raft.persistent_state.lock().unwrap().log = vec![(1, Bytes::from("")), (2, Bytes::from(""))];
+
+        let log_len = raft.persistent_state.lock().unwrap().log.len();
+
+        assert_eq!(raft.volatile_state.lock().unwrap().match_index, HashMap::new());
+        assert_eq!(raft.volatile_state.lock().unwrap().next_index, HashMap::new());
+
+        raft.intialize_leader_volatile_state();
+
+        let mut expected_next_hmap = HashMap::default();
+        let mut expected_match_hmap = HashMap::default();
+
+        let peers = raft.nodes();
+        for peer_id in peers {
+            expected_next_hmap.insert(peer_id, log_len + 1);
+            expected_match_hmap.insert(peer_id, 0);
+        }
+
+        assert_eq!(raft.volatile_state.lock().unwrap().next_index, expected_next_hmap);
+        assert_eq!(raft.volatile_state.lock().unwrap().match_index, expected_match_hmap);
+
+    }
+
+    /// Test that we voted for ourselves, changed our election state to Candidate,
+    /// reset our voter log with just one entry (i.e. our own vote), and incremented our term.
+    #[test]
+    fn handle_becoming_candidate() {
+        
+        let raft = RaftNode::<BufferBackend>::new();
+        let mut persistent_state_guard = raft.persistent_state.lock().unwrap();
+        persistent_state_guard.current_term = 5;
+        persistent_state_guard.voted_for = None;
+        drop(persistent_state_guard);
+
+        let mut election_guard = raft.election.lock().unwrap();
+        election_guard.state = ElectionState::Follower;
+        drop(election_guard);
+
+        raft.handle_becoming_candidate();
+
+        assert_eq!(raft.election.lock().unwrap().state, ElectionState::Candidate);
+        assert_eq!(raft.persistent_state.lock().unwrap().current_term, 6);
+
+        let mut hset = HashSet::new();
+        hset.insert(1usize);
+
+        assert_eq!(raft.persistent_state.lock().unwrap().voted_for, Some(raft.metadata.id));
+        assert_eq!(raft.election.lock().unwrap().voter_log, hset);
+
+    }
+
+    #[test]
+    fn handle_becoming_leader() {
+        
+        let raft = RaftNode::<BufferBackend>::new();
+        raft.persistent_state.lock().unwrap().log = vec![(1, Bytes::from("")), (2, Bytes::from(""))];
+        raft.election.lock().unwrap().state = ElectionState::Candidate;
+
+        let log_len = raft.persistent_state.lock().unwrap().log.len();
+
+        assert_eq!(raft.volatile_state.lock().unwrap().match_index, HashMap::new());
+        assert_eq!(raft.volatile_state.lock().unwrap().next_index, HashMap::new());
+
+        raft.handle_becoming_leader();
+
+        let mut expected_next_hmap = HashMap::default();
+        let mut expected_match_hmap = HashMap::default();
+
+        let peers = raft.nodes();
+        for peer_id in peers {
+            expected_next_hmap.insert(peer_id, log_len + 1);
+            expected_match_hmap.insert(peer_id, 0);
+        }
+
+        assert_eq!(raft.volatile_state.lock().unwrap().next_index, expected_next_hmap);
+        assert_eq!(raft.volatile_state.lock().unwrap().match_index, expected_match_hmap);
+        assert_eq!(raft.election.lock().unwrap().state, ElectionState::Leader);
+
+    }
+
+    #[test]
+    fn build_vote_request_with_non_empty_log() {
+        let raft = RaftNode::<BufferBackend>::new();
+        raft.persistent_state.lock().unwrap().log = vec![(1, Bytes::from("")), (3, Bytes::from(""))];
+        raft.persistent_state.lock().unwrap().current_term = 5;
+
+        let vote_request = raft.build_vote_request();
+        assert_eq!(vote_request.candidate_id, 1);
+        assert_eq!(vote_request.last_log_index, 2);
+        assert_eq!(vote_request.last_log_term, 3);
+        assert_eq!(vote_request.term, 5);
+    }
+
+    #[test]
+    fn build_vote_request_with_empty_log() {
+        let raft = RaftNode::<BufferBackend>::new();
+        raft.persistent_state.lock().unwrap().log = vec![];
+        raft.persistent_state.lock().unwrap().current_term = 5;
+
+        let vote_request = raft.build_vote_request();
+        assert_eq!(vote_request.candidate_id, 1);
+        assert_eq!(vote_request.last_log_index, 0);
+        assert_eq!(vote_request.last_log_term, 0);
+        assert_eq!(vote_request.term, 5);
+    }
+
+    #[test]
+    fn build_heartbeat_with_empty_log() {
+
+        let raft = RaftNode::<BufferBackend>::new();
+        raft.persistent_state.lock().unwrap().log = vec![];
+        raft.persistent_state.lock().unwrap().current_term = 5;
+        raft.volatile_state.lock().unwrap().commit_index = 0;
+
+        let request = raft.build_heartbeat();
+        assert_eq!(request.leader_id, 1);
+        assert_eq!(request.leader_commit_index, 0);
+        assert_eq!(request.entries, vec![]);
+        assert_eq!(request.previous_log_index, 0);
+        assert_eq!(request.previous_log_term, 0);
+        assert_eq!(request.term, 5);
+    }
+
+
+    #[test]
+    fn build_heartbeat_with_non_empty_log() {
+
+        let raft = RaftNode::<BufferBackend>::new();
+        raft.persistent_state.lock().unwrap().log = vec![(1, Bytes::from("")), (3, Bytes::from(""))];
+        raft.persistent_state.lock().unwrap().current_term = 5;
+        raft.volatile_state.lock().unwrap().commit_index = 1;
+
+        let request = raft.build_heartbeat();
+        assert_eq!(request.leader_id, 1);
+        assert_eq!(request.leader_commit_index, 1);
+        assert_eq!(request.entries, vec![]);
+        assert_eq!(request.previous_log_index, 2);
+        assert_eq!(request.previous_log_term, 3);
+        assert_eq!(request.term, 5);
+    }
+
+    #[test]
+    fn update_next_index_and_match_index_for_follower() {
+
+        let raft = RaftNode::<BufferBackend>::new();
+        raft.persistent_state.lock().unwrap().log = vec![(1, Bytes::from("")), (2, Bytes::from(""))];
+
+        assert_eq!(raft.volatile_state.lock().unwrap().match_index, HashMap::new());
+        assert_eq!(raft.volatile_state.lock().unwrap().next_index, HashMap::new());
+
+        let prev_persistent_state = raft.persistent_state.lock().unwrap().clone();
+
+        raft.update_next_index_and_match_index_for_follower(2, 2, 1);
+
+        assert_eq!(raft.volatile_state.lock().unwrap().match_index.get(&2).unwrap(), &1);
+        assert_eq!(raft.volatile_state.lock().unwrap().next_index.get(&2).unwrap(), &2);
+        assert_eq!(&*raft.persistent_state.lock().unwrap(), &prev_persistent_state);
+    }
+
+    #[test]
+    fn raft_node_from_raft_config() {
+        let config = RaftConfig::default();
+        assert_eq!(config.server.id, 1);
+        assert_eq!(config.server.addr, "127.0.0.1:9000".parse().unwrap());
+        assert_eq!(config.peers.len(), 2);
+
+        let raft: RaftNode<BufferBackend> = config.into();
+        assert_eq!(raft.cluster.len(), 2);
+        assert_eq!(&*raft.persistent_state.lock().unwrap(), &PersistentState::default());
+        assert_eq!(&*raft.volatile_state.lock().unwrap(), &VolatileState::default());
+        assert_eq!(&*raft.election.lock().unwrap(), &Election::default());
+        assert_eq!(raft.metadata, NodeMetadata { id: 1, addr: "127.0.0.1:9000".parse().unwrap() });
+
+
     }
 }

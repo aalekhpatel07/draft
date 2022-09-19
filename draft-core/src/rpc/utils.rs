@@ -1,3 +1,4 @@
+use crate::{Election, ElectionState, VoteResponse, AppendEntriesResponse};
 use crate::node::{PersistentState, VolatileState};
 use crate::rpc::{AppendEntriesRequest, VoteRequest};
 use bytes::Bytes;
@@ -17,6 +18,16 @@ pub fn vote_request(
         last_log_term,
     }
 }
+
+
+#[allow(dead_code)]
+pub fn vote_response(
+    term: usize,
+    vote_granted: bool
+) -> VoteResponse {
+    VoteResponse { term, vote_granted }
+}
+
 
 #[allow(dead_code)]
 pub fn append_entries_request(
@@ -39,6 +50,15 @@ pub fn append_entries_request(
     }
 }
 
+
+#[allow(dead_code)]
+pub fn append_entries_response(
+    term: usize,
+    success: bool
+) -> AppendEntriesResponse {
+    AppendEntriesResponse { term, success }
+}
+
 #[allow(dead_code)]
 pub(crate) fn persistent_state(
     current_term: usize,
@@ -53,6 +73,15 @@ pub(crate) fn persistent_state(
         voted_for,
     }
 }
+
+#[allow(dead_code)]
+pub(crate) fn election(
+    election_state: ElectionState,
+    voter_log: Vec<usize>
+) -> Election {
+    Election { state: election_state, voter_log: voter_log.into_iter().collect()}
+}
+
 
 #[allow(dead_code)]
 pub(crate) fn volatile_state(

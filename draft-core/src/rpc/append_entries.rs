@@ -297,7 +297,6 @@ pub mod tests {
     pub use super::*;
     pub use crate::*;
     pub use std::sync::{Arc, Mutex};
-    use tracing::Level;
 
     #[allow(unused_imports)]
     pub use crate::rpc::utils::*;
