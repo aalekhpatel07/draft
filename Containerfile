@@ -20,4 +20,9 @@ COPY draft-server draft-server
 RUN cargo nextest run --release --all-features
 RUN cargo build --release
 
-CMD ["/bin/sleep", "infinity"]
+COPY sample_configs/config-1.toml /etc/raft/raftd.toml
+
+RUN cp target/release/draft-server /usr/bin/draft-server
+RUN chmod +x /usr/bin/draft-server
+
+ENTRYPOINT ["draft-server", "--config", "/etc/raft/raftd.toml"]
