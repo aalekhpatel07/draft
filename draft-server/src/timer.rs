@@ -66,13 +66,77 @@ pub fn set_interval(signal_tx: UnboundedSender<()>, duration: Duration, immediat
 pub struct RaftTimeout {
     /// The receive end of the channel that will instruct the internal timer
     /// to be reset.
-    pub reset_timer_rx: UnboundedReceiver<()>,
+    pub reset_timer_rx: UnboundedReceiver<Duration>,
+    /// The receive end of the channel that will stop the internal timer.
+    pub stop_timer_rx: UnboundedReceiver<()>,
     /// The sender end of the channel that a message will be sent to
     /// when the timer expires.
     pub timer_complete_tx: UnboundedSender<()>,
+}
 
-    /// A range (in milliseconds) to draw a random timeout from.
-    pub duration_range: Range<u64>
+impl RaftTimeout {
+
+    /// Create a new instance of the timer.
+    /// 
+    /// ## Examples
+    /// 
+    /// ```
+    /// use draft_server::RaftTimeout;
+    /// use tokio::sync::mpsc::unbounded_channel;
+    /// use std::time::Duration;
+    /// 
+    /// let (reset_tx, reset_rx) = unbounded_channel();
+    /// let (stop_tx, stop_rx) = unbounded_channel();
+    /// let (timeout_tx, timeout_rx) = unbounded_channel();
+    /// 
+    /// let timer = RaftTimeout::new(
+    ///     reset_rx,
+    ///     stop_rx,
+    ///     timeout_tx,
+    /// );
+    /// ```
+    pub fn new(
+        reset_timer_rx: UnboundedReceiver<Duration>, 
+        stop_timer_rx: UnboundedReceiver<()>,
+        on_complete_tx: UnboundedSender<()>, 
+    ) -> Self {
+        Self {
+            reset_timer_rx,
+            stop_timer_rx,
+            timer_complete_tx: on_complete_tx,
+        }
+    }
+
+    /// The async loop of the internal timer that will act on the
+    /// "reset" messages received on the reset_rx channel, and
+    /// when the timeout expires, will send "complete"
+    /// messages to the on_complete channel.
+    pub async fn run(self) -> color_eyre::Result<()> {
+        let mut token: Option<TimeoutToken> = None;
+        let mut stop_timer_rx = self.stop_timer_rx;
+        let mut reset_timer_rx = self.reset_timer_rx;
+
+        loop {
+            select! {
+                Some(duration) = reset_timer_rx.recv() => {
+                    if let Some(timeout_token) = token.as_ref() {
+                        timeout_token.handle.abort();
+                        trace!("Resetting timeout.");
+                    }
+                    token = Some(set_timeout(self.timer_complete_tx.clone(), duration));
+                },
+                Some(_) = stop_timer_rx.recv() => {
+                    if let Some(timeout_token) = token.as_ref() {
+                        trace!("clearing timeout set for {:#?} ms", timeout_token.duration.as_millis());
+                        timeout_token.handle.abort();
+                    }
+                    token = None
+                },
+                else => break
+            }
+        }
+        Ok(())
+    }
 }
 
 
@@ -171,7 +235,7 @@ impl RaftInterval {
                 Some(_) = restart_rx.recv() => {
                     
                     if let Some(timeout_token) = token.as_ref() {
-                        trace!("clearing timeout set for {:#?} ms", timeout_token.duration.as_millis());
+                        trace!("clearing interval set for {:#?} ms", timeout_token.duration.as_millis());
                         timeout_token.handle.abort();
                     }
 
@@ -186,70 +250,16 @@ impl RaftInterval {
                     }
                     token = None
                 },
+                else => break,
             }
         }
 
-    }
-
-}
-
-
-impl RaftTimeout {
-
-    /// Create a new instance of the timer.
-    /// 
-    /// ## Examples
-    /// 
-    /// ```
-    /// use draft_server::RaftTimeout;
-    /// use tokio::sync::mpsc::unbounded_channel;
-    /// 
-    /// // Our timer will randomly draw a time unit between
-    /// // 50ms and 100ms.
-    /// let duration_between_50ms_and_100ms = 50..100;
-    /// 
-    /// let (reset_tx, reset_rx) = unbounded_channel();
-    /// let (timeout_tx, timeout_rx) = unbounded_channel();
-    /// 
-    /// let timer = RaftTimeout::new(
-    ///     reset_rx,
-    ///     timeout_tx,
-    ///     duration_between_50ms_and_100ms
-    /// );
-    /// ```
-    pub fn new(
-        reset_rx: UnboundedReceiver<()>, 
-        on_complete_tx: UnboundedSender<()>, 
-        duration_range: Range<u64>
-    ) -> Self {
-        Self {
-            reset_timer_rx: reset_rx,
-            timer_complete_tx: on_complete_tx,
-            duration_range
-        }
-    }
-
-    /// The async loop of the internal timer that will act on the
-    /// "reset" messages received on the reset_rx channel, and
-    /// when the timeout expires, will send "complete"
-    /// messages to the on_complete channel.
-    pub async fn run(self) -> color_eyre::Result<()> {
-        let mut token: Option<TimeoutToken> = None;
-        let mut reset_timer_rx = self.reset_timer_rx;
-
-        while let Some(_) = reset_timer_rx.recv().await {
-            trace!("Received reset.");
-            if let Some(timeout_token) = token.as_ref() {
-                trace!("Clearing timeout set for {:#?} ms", timeout_token.duration.as_millis());
-                timeout_token.handle.abort();
-            }
-            let duration = get_random_duration(self.duration_range.clone());
-            trace!("Resetting the timer for {:#?} ms", duration.as_millis());
-            token = Some(set_timeout(self.timer_complete_tx.clone(), duration));
-        }
         Ok(())
+
     }
+
 }
+
 
 #[cfg(test)]
 pub mod tests {
@@ -264,13 +274,11 @@ pub mod tests {
         set_up_logging(Level::TRACE);
 
         let (reset_tx, reset_rx) = unbounded_channel();
+        let (_stop_tx, stop_rx) = unbounded_channel();
+        drop(_stop_tx); // We're not gonna send the stop signal.
         let (on_complete_tx, mut on_complete_rx) = unbounded_channel();
-        let duration_range: Range<u64> = 1500..3000;
-        let timer = RaftTimeout::new(reset_rx, on_complete_tx, duration_range.clone());
+        let timer = RaftTimeout::new(reset_rx, stop_rx, on_complete_tx);
         let start_time = Instant::now();
-
-        let initial_delay = Duration::from_secs(1);
-
 
         let t1 = tokio::spawn(async move {
             timer.run().await
@@ -289,7 +297,7 @@ pub mod tests {
                 // First time we receive this, must be after at least
                 // (delay: 1s) + (delay: 1s) + (min_timeout: 1500ms) = 2500ms.
 
-                let at_least_duration = 2 * initial_delay + Duration::from_millis(duration_range.clone().start);
+                let at_least_duration = Duration::from_millis(1900);
                 assert!(start_time.elapsed() >= at_least_duration);
             }
             assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -297,14 +305,68 @@ pub mod tests {
 
         let t3 = tokio::spawn( async move {
             // Wait for `initial_delay` before starting the timer for the first time.
-            tokio::time::sleep(initial_delay).await;
-            reset_tx.send(()).unwrap();
+            // tokio::time::sleep(initial_delay).await;
+            reset_tx.send(Duration::from_secs(1)).unwrap();
             // Wait for `initial_delay` before resetting the timer.
-            tokio::time::sleep(initial_delay).await;
-            reset_tx.send(()).unwrap();
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            reset_tx.send(Duration::from_secs(1)).unwrap();
         });
 
+
         let _ = tokio::join!(t1, t2, t3);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    pub async fn timeout_with_stop_works() -> color_eyre::Result<()> {
+        set_up_logging(Level::TRACE);
+
+        let (reset_tx, reset_rx) = unbounded_channel();
+        let (stop_tx, stop_rx) = unbounded_channel();
+        let (on_complete_tx, mut on_complete_rx) = unbounded_channel();
+        let timer = RaftTimeout::new(reset_rx, stop_rx, on_complete_tx);
+        let start_time = Instant::now();
+
+        let t1 = tokio::spawn(async move {
+            timer.run().await
+        });
+
+        let counter: AtomicU64 = AtomicU64::from(0);
+
+        let t2 = tokio::spawn(async move {
+            while let Some(_) = on_complete_rx.recv().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                // Since the timer's may expire only after 1500ms,
+                // and we reset the timer after 1s,
+                // we expect the the timer to not have been completed 
+                // before (1s + 1s) + (1500ms).
+
+                // First time we receive this, must be after at least
+                // (delay: 1s) + (delay: 1s) + (min_timeout: 1500ms) = 2500ms.
+
+                let at_least_duration = Duration::from_millis(1900);
+                assert!(start_time.elapsed() >= at_least_duration);
+            }
+            // Because we send the stop signal right after 3500ms.
+            assert_eq!(counter.load(Ordering::SeqCst), 0);
+        });
+
+        let t3 = tokio::spawn( async move {
+            // Wait for `initial_delay` before starting the timer for the first time.
+            reset_tx.send(Duration::from_secs(1)).unwrap();
+            // Wait for `initial_delay` before resetting the timer.
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            reset_tx.send(Duration::from_secs(1)).unwrap();
+        });
+
+        let t4 = tokio::spawn( async move {
+            // Wait for 3.5s before stopping the timer.
+            tokio::time::sleep(Duration::from_millis(1800)).await;
+            stop_tx.send(()).unwrap();
+        });
+
+        let _ = tokio::join!(t1, t2, t3, t4);
 
         Ok(())
     }
