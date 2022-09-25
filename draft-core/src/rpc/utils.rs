@@ -50,7 +50,6 @@ pub fn append_entries_request(
     }
 }
 
-
 #[allow(dead_code)]
 pub fn append_entries_response(
     term: usize,

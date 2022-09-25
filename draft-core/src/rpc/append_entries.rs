@@ -17,6 +17,41 @@ pub struct AppendEntriesRequest {
     pub leader_commit_index: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AppendEntriesRequestWithoutLogs {
+    pub term: usize,
+    pub leader_id: usize,
+    pub previous_log_index: usize,
+    pub previous_log_term: usize,
+    pub leader_commit_index: usize,
+    pub entries_length: usize
+}
+
+impl From<&AppendEntriesRequest> for AppendEntriesRequestWithoutLogs {
+    fn from(request: &AppendEntriesRequest) -> Self {
+        Self {
+            term: request.term,
+            leader_id: request.leader_id,
+            previous_log_index: request.previous_log_index,
+            previous_log_term: request.previous_log_term,
+            leader_commit_index: request.leader_commit_index,
+            entries_length: request.entries.len()
+        }
+    }
+}
+
+impl AppendEntriesRequestWithoutLogs {
+    pub fn is_heartbeat(&self) -> bool {
+        self.entries_length == 0
+    }
+}
+
+impl From<AppendEntriesRequest> for AppendEntriesRequestWithoutLogs {
+    fn from(request: AppendEntriesRequest) -> Self {
+        (&request).into()
+    }
+}
+
 impl AppendEntriesRequest {
     #[inline(always)]
     pub fn is_heartbeat(&self) -> bool {

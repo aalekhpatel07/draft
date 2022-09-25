@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use color_eyre::eyre::eyre;
 use derive_builder::Builder;
 use hashbrown::HashMap;
 use itertools::Itertools;
@@ -10,10 +11,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{VoteResponse, VoteRequest, AppendEntriesRequest};
+use crate::{VoteResponse, VoteRequest, AppendEntriesRequest, AppendEntriesResponse, Peer, AppendEntriesRequestWithoutLogs};
 use crate::config::RaftConfig;
 use crate::storage::Storage;
-use crate::rpc::handle_request_vote_response;
+use crate::rpc::{handle_request_vote_response, handle_append_entries_response};
 
 
 pub type Log = (usize, Bytes);
@@ -231,12 +232,14 @@ where
         Self::default().with_config(RaftConfig::default())
     }
 
-    pub fn reset_election(&self) {
+    #[tracing::instrument(skip(self))]
+    pub fn become_follower(&self) {
         let mut election_guard = self.election.lock().unwrap();
         election_guard.state = ElectionState::Follower;
         election_guard.voter_log = hashbrown::HashSet::default();
         drop(election_guard);
     }
+    #[tracing::instrument(skip(self))]
     pub fn intialize_leader_volatile_state(&self) {
 
         let persistent_state_guard = self.persistent_state.lock().unwrap();
@@ -263,6 +266,7 @@ where
         drop(volatile_state_guard);
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn handle_request_vote_response(
         &self, 
         peer_id: usize, 
@@ -273,6 +277,18 @@ where
         handle_request_vote_response(self, response, peer_id, has_become_leader_tx).unwrap();
     }
 
+    #[tracing::instrument(skip(self))]
+    pub fn handle_append_entries_response(
+        &self,
+        peer_id: usize,
+        sent_request: AppendEntriesRequestWithoutLogs,
+        response: AppendEntriesResponse,
+        append_entries_outbound_tx: UnboundedSender<(Peer, AppendEntriesRequest)>
+    ) {
+        handle_append_entries_response(self, sent_request, response, peer_id, append_entries_outbound_tx).unwrap();
+    }
+
+    #[tracing::instrument(skip(self))]
     pub fn handle_becoming_candidate(&self) {
         let mut persistent_state_guard = self.persistent_state.lock().unwrap();
 
@@ -292,6 +308,7 @@ where
 
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn handle_becoming_leader(&self) {
         let mut election_guard = self.election.lock().unwrap();
         election_guard.state = ElectionState::Leader;
@@ -318,6 +335,49 @@ where
         VoteRequest { term, candidate_id: self.metadata.id, last_log_index, last_log_term}
     }
     
+
+    pub fn build_append_entries_request(
+        &self,
+        previous_log_index: usize,
+        heartbeat: bool
+    ) -> color_eyre::Result<AppendEntriesRequest> {
+
+        let persistent_state_guard = self.persistent_state.lock().unwrap();
+        let term = persistent_state_guard.current_term;
+
+        if persistent_state_guard.log.len() < previous_log_index {
+            return Err(eyre!("Couldn't find a tail to build append entries from."))
+        }
+        
+        // Term 0 is defunct. Only to be used
+        // with the 0th log index.
+        let previous_log_term = if previous_log_index == 0 {
+            0
+        } else {
+            persistent_state_guard.log[previous_log_index - 1].term()
+        };
+        let entries: Vec<Log> = if !heartbeat {
+            persistent_state_guard.log[previous_log_index + 1 ..].into()
+        } else {
+            vec![]
+        };
+
+        drop(persistent_state_guard);
+
+        let volatile_state_guard = self.volatile_state.lock().unwrap();
+        let leader_commit_index = volatile_state_guard.commit_index;
+        drop(volatile_state_guard);
+
+        Ok(AppendEntriesRequest {
+            term,
+            leader_id: self.metadata.id,
+            previous_log_index,
+            previous_log_term,
+            entries,
+            leader_commit_index
+        })
+    }
+
     pub fn build_heartbeat(&self) -> AppendEntriesRequest {
             // pub term: usize,
             // pub leader_id: usize,
@@ -357,6 +417,7 @@ where
         self.cluster.keys().map(|&k| k).collect_vec()
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn update_next_index_and_match_index_for_follower(
         &self, 
         peer_id: usize,
@@ -521,7 +582,7 @@ mod tests {
         assert_eq!(raft.election.lock().unwrap().state, starting_state);
         assert_eq!(raft.election.lock().unwrap().voter_log, starting_voter_log);
 
-        raft.reset_election();
+        raft.become_follower();
 
         assert_eq!(raft.election.lock().unwrap().state, ElectionState::Follower);
         assert_eq!(raft.election.lock().unwrap().voter_log, HashSet::default());

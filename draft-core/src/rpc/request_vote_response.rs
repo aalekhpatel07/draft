@@ -69,14 +69,19 @@ where
 
         if vote_count >= majority_vote_threshold {
             tracing::trace!("Received a majority of the votes. Becoming the leader.");
-            let mut election_guard = receiver_node.election.lock().unwrap();
-            election_guard.state = ElectionState::Leader;
-            drop(election_guard);
+            let current_election_state = receiver_node.election.lock().unwrap().state;
 
-            // Notify ourselves of our election win.
+            // Notify ourselves of our election win if we are not already a leader.
             // And begin sending AppendEntriesRPCs.
-            if let Err(e) = has_become_leader_tx.send(()) {
-                tracing::error!("Error sending a notification of our election win: {}", e.to_string());
+            if current_election_state != ElectionState::Leader {
+                let mut election_guard = receiver_node.election.lock().unwrap();
+                election_guard.state = ElectionState::Leader;
+                
+                drop(election_guard);
+
+                if let Err(e) = has_become_leader_tx.send(()) {
+                    tracing::error!("Error sending a notification of our election win: {}", e.to_string());
+                }
             }
         }
     }
