@@ -2,6 +2,7 @@
 members = [
 	"draft-core",
 	"draft-server",
+	"draft-state-machine",
 ]
 
 [profile.release]
