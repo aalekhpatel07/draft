@@ -152,11 +152,20 @@ pub enum RedisError {
     FailedToLockMutex
 }
 
+impl Default for Redis {
+    fn default() -> Self {
+        Redis::new()
+    }
+}
 
 impl StateMachine for Redis {
     type Request = Command;
     type Response = RedisResponse<Value>;
     type Err = RedisError;
+
+    fn new() -> Self {
+        Redis::new()
+    }
 
     fn _apply(&self, entry: Self::Request) -> Result<Self::Response, Self::Err> {
         match entry {

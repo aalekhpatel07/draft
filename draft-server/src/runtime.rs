@@ -7,6 +7,7 @@ use draft_core::{
     RaftRPC,
     AppendEntriesRequestWithoutLogs
 };
+use draft_state_machine::RaftStateMachine;
 use tracing::{Instrument, info_span};
 use crate::{VoteRequest, AppendEntriesRequest, Peer, PeerData, RaftTimeout, RaftInterval, get_random_duration};
 use rand::Rng;
@@ -14,8 +15,9 @@ use serde::{Serialize, de::DeserializeOwned};
 use tokio::{time::sleep, sync::mpsc::{UnboundedReceiver, UnboundedSender}, select};
 use crate::{Network, network::RaftServer};
 use tokio::sync::mpsc;
-use std::{sync::Arc, net::SocketAddr, fmt::Debug};
+use std::{sync::{Arc, Mutex}, net::SocketAddr, fmt::Debug};
 use std::time::Duration;
+use bytes::Bytes;
 
 
 
@@ -52,7 +54,16 @@ pub struct StateRx {
     pub on_commit_index_updated_rx: UnboundedReceiver<()>,
     pub on_last_log_index_updated_rx: UnboundedReceiver<()>,
     pub on_match_index_updated_rx: UnboundedReceiver<()>,
+}
 
+#[derive(Debug, Clone)]
+pub struct ClientTx {
+    pub on_command_received_tx: UnboundedSender<()>
+}
+
+#[derive(Debug)]
+pub struct ClientRx {
+    pub on_command_received_rx: UnboundedReceiver<()>
 }
 
 
@@ -85,8 +96,9 @@ pub struct ElectionTx {
 
 
 #[derive(Debug)]
-pub struct RaftRuntime<S, N> {
+pub struct RaftRuntime<S, N, M> {
     _core: Arc<RaftNode<S>>,
+    _state_machine: Arc<Mutex<M>>,
     _server: RaftServer<N>,
     _election_timer: RaftTimeout,
     _heartbeat_timer: RaftInterval,
@@ -103,7 +115,8 @@ pub struct RaftRuntime<S, N> {
     socket_write_sender: UnboundedSender<PeerData>,
 }
 
-pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
+pub async fn process_rpc<S: Storage + Default + core::fmt::Debug, M: RaftStateMachine>
+(
     mut election_rx: ElectionRx,
     election_tx: ElectionTx,
 
@@ -117,6 +130,7 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
     socket_write_sender: UnboundedSender<PeerData>,
 
     raft: Arc<RaftNode<S>>,
+    state_machine: Arc<Mutex<M>>,
     rpc_tx: RPCTx,
     mut rpc_rx: RPCRx
 ) -> color_eyre::Result<()> {
@@ -251,7 +265,17 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
 
             // We wish to request our state machine to apply the latest committed entries.
             Some(_) = state_rx.on_commit_index_updated_rx.recv() => {
-                
+
+                let entries_to_apply = raft.incr_last_applied_and_get_log_entries_to_apply();
+                let sm_guard = state_machine.lock().unwrap();
+                let state_machine_responses: Vec<Bytes> = entries_to_apply
+                    .into_iter()
+                    .map(
+                        |entry| sm_guard.apply(entry).unwrap()
+                    )
+                    .collect();
+                drop(sm_guard);
+                // state_machine.apply()
             },
 
             // We just appended entries to our local log. Begin the replication process.
@@ -331,14 +355,16 @@ pub async fn send_rpc<Data: Serialize + DeserializeOwned + core::fmt::Debug>(
     }
 }
 
-impl<S, N> RaftRuntime<S, N> 
+impl<S, N, M> RaftRuntime<S, N, M> 
 where
     S: Storage + 'static + Send + Sync + Default + core::fmt::Debug,
-    N: Network<SocketAddr> + Send + Sync + 'static
+    N: Network<SocketAddr> + Send + Sync + 'static,
+    M: RaftStateMachine + Send + Sync + 'static,
 {
     pub fn new(config: RaftConfig) -> Self {
 
         let raft: Arc<RaftNode<S>> = Arc::new(config.clone().into());
+        let state_machine: Arc<Mutex<M>> = Arc::new(Mutex::new(M::default()));
         let (socket_write_sender, socket_write_receiver) = mpsc::unbounded_channel();
         let (socket_read_sender, socket_read_receiver ) = mpsc::unbounded_channel();
 
@@ -387,6 +413,7 @@ where
         Self {
             _core: raft,
             _server: server,
+            _state_machine: state_machine,
             _election_timer: election_timer,
             _heartbeat_timer: heartbeat_timer,
             config,
@@ -420,6 +447,7 @@ where
 
     pub async fn run(self) -> color_eyre::Result<()> {
 
+        let state_machine = self._state_machine.clone();
         let raft = self._core.clone();
         let election_timer = self._election_timer;
         let heartbeat_timer = self._heartbeat_timer;
@@ -450,6 +478,7 @@ where
                 socket_read_receiver,
                 socket_write_sender,
                 raft,
+                state_machine,
                 rpc_tx,
                 rpc_rx
             ).await

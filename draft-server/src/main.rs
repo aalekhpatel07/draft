@@ -26,6 +26,8 @@ pub struct Opt {
 #[cfg(not(tarpaulin_include))]
 #[tokio::main]
 pub async fn main() -> color_eyre::Result<()> {
+    use draft_state_machine::redis::Redis;
+
 
     let opt = Opt::from_args();
 
@@ -59,7 +61,7 @@ pub async fn main() -> color_eyre::Result<()> {
     subscriber.init();
 
     let config = load_from_file(opt.config)?;
-    let raft: RaftRuntime<BufferBackend, UdpSocket> = RaftRuntime::new(config);
+    let raft: RaftRuntime<BufferBackend, UdpSocket, Redis> = RaftRuntime::new(config);
     raft.run().instrument(info_span!("app")).await?;
 
     // Cleanly shut down opentelemetry so all queued requests can be sent out

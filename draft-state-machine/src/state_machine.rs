@@ -2,17 +2,18 @@ use bytes::Bytes;
 
 
 
-pub trait RaftStateMachine 
+pub trait RaftStateMachine: Default 
 {
-    type Err;
+    type Err: std::fmt::Debug;
     fn apply(&self, entry: Bytes) -> core::result::Result<Bytes, Self::Err>;
 }
 
-pub trait StateMachine {
+pub trait StateMachine: Default {
     type Request: From<Bytes>;
     type Response: Into<Bytes>;
-    type Err;
+    type Err: std::fmt::Debug;
 
+    fn new() -> Self;
     fn _apply(&self, entry: Self::Request) -> core::result::Result<Self::Response, Self::Err>;
 }
 
