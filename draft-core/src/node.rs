@@ -438,7 +438,7 @@ where
                 .map(|x| x.log().clone())
                 .collect();
             
-            volatile_state_guard.commit_index = volatile_state_guard.last_applied;
+            volatile_state_guard.last_applied = volatile_state_guard.commit_index;
         }
         drop(persistent_state_guard);
         drop(volatile_state_guard);
