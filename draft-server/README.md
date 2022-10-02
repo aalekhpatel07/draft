@@ -9,4 +9,4 @@ The runtime for Raft.
 - [ ] Add tests and documentation.
 - [ ] Implement some state mutation channels to complete the core loop.
 - [ ] Add a Raft client that accepts tcp/udp/http and relays to the cluster.
-- [ ] Add a KeyValue store to operate client requests on.
+- [x] Add a KeyValue store to operate client requests on. (We have `draft-mini-redis` as our backend as an example.)
