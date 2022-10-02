@@ -7,6 +7,7 @@ use draft_core::{
     RaftRPC,
     AppendEntriesRequestWithoutLogs
 };
+use draft_state_machine::RaftStateMachine;
 use tracing::{Instrument, info_span};
 use crate::{VoteRequest, AppendEntriesRequest, Peer, PeerData, RaftTimeout, RaftInterval, get_random_duration};
 use rand::Rng;
@@ -14,8 +15,9 @@ use serde::{Serialize, de::DeserializeOwned};
 use tokio::{time::sleep, sync::mpsc::{UnboundedReceiver, UnboundedSender}, select};
 use crate::{Network, network::RaftServer};
 use tokio::sync::mpsc;
-use std::{sync::Arc, net::SocketAddr, fmt::Debug};
+use std::{sync::{Arc, Mutex}, net::SocketAddr, fmt::Debug};
 use std::time::Duration;
+use bytes::Bytes;
 
 
 
@@ -52,7 +54,17 @@ pub struct StateRx {
     pub on_commit_index_updated_rx: UnboundedReceiver<()>,
     pub on_last_log_index_updated_rx: UnboundedReceiver<()>,
     pub on_match_index_updated_rx: UnboundedReceiver<()>,
+}
 
+#[derive(Debug, Clone)]
+pub struct ClientTx {
+    pub on_command_received_tx: UnboundedSender<()>,
+    pub on_command_applied_tx: UnboundedSender<()>,
+}
+
+#[derive(Debug)]
+pub struct ClientRx {
+    pub on_command_received_rx: UnboundedReceiver<()>
 }
 
 
@@ -83,27 +95,41 @@ pub struct ElectionTx {
     pub has_become_candidate_tx: UnboundedSender<()>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChannelsTx {
+    pub election: ElectionTx,
+    pub timer: TimerTx,
+    pub client: ClientTx,
+    pub state: StateTx,
+    pub rpc: RPCTx
+}
 
 #[derive(Debug)]
-pub struct RaftRuntime<S, N> {
+pub struct ChannelsRx {
+    pub election: ElectionRx,
+    pub timer: TimerRx,
+    pub client: ClientRx,
+    pub state: StateRx,
+    pub rpc: RPCRx
+}
+
+
+#[derive(Debug)]
+pub struct RaftRuntime<S, N, M> {
     _core: Arc<RaftNode<S>>,
+    _state_machine: Arc<Mutex<M>>,
     _server: RaftServer<N>,
     _election_timer: RaftTimeout,
     _heartbeat_timer: RaftInterval,
     pub config: RaftConfig,
-    rpc_rx: RPCRx,
-    rpc_tx: RPCTx,
-    state_rx: StateRx,
-    state_tx: StateTx,
-    election_rx: ElectionRx,
-    election_tx: ElectionTx,
-    timer_rx: TimerRx,
-    timer_tx: TimerTx,
+    channels_tx: ChannelsTx,
+    channels_rx: ChannelsRx,
     socket_read_receiver: UnboundedReceiver<PeerData>,
     socket_write_sender: UnboundedSender<PeerData>,
 }
 
-pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
+pub async fn process_rpc<S: Storage + Default + core::fmt::Debug, M: RaftStateMachine>
+(
     mut election_rx: ElectionRx,
     election_tx: ElectionTx,
 
@@ -113,10 +139,14 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
     mut timer_rx: TimerRx,
     timer_tx: TimerTx,
 
+    mut client_rx: ClientRx,
+    client_tx: ClientTx,
+
     mut socket_read_receiver: UnboundedReceiver<PeerData>,
     socket_write_sender: UnboundedSender<PeerData>,
 
     raft: Arc<RaftNode<S>>,
+    state_machine: Arc<Mutex<M>>,
     rpc_tx: RPCTx,
     mut rpc_rx: RPCRx
 ) -> color_eyre::Result<()> {
@@ -244,14 +274,31 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>(
                 timer_tx.reset_heartbeat_tx.send(()).unwrap();
             },
 
-            // We wish to do a check if out commit index can be updated.
+            // We wish to do a check if our commit index can be updated.
             Some(_) = state_rx.on_match_index_updated_rx.recv() => {
 
             },
 
+            // Append the new log entries to our local log. Wait for replication to finish.
+            Some(_) = client_rx.on_command_received_rx.recv() => {
+                
+            },
+
             // We wish to request our state machine to apply the latest committed entries.
             Some(_) = state_rx.on_commit_index_updated_rx.recv() => {
-                
+
+                let entries_to_apply = raft.incr_last_applied_and_get_log_entries_to_apply();
+                let sm_guard = state_machine.lock().unwrap();
+                // let state_machine_responses: Vec<Bytes> = entries_to_apply
+                //     .into_iter()
+                //     .map(
+                //         async |entry| sm_guard.apply(entry).await.unwrap()
+                //     )
+                //     .collect();
+                drop(sm_guard);
+                // for resp in state_machine_responses {
+                //     client_tx.on_command_applied_tx.send(())?; // FIXME: Think about how and what to send to client.
+                // }
             },
 
             // We just appended entries to our local log. Begin the replication process.
@@ -331,14 +378,16 @@ pub async fn send_rpc<Data: Serialize + DeserializeOwned + core::fmt::Debug>(
     }
 }
 
-impl<S, N> RaftRuntime<S, N> 
+impl<S, N, M> RaftRuntime<S, N, M> 
 where
     S: Storage + 'static + Send + Sync + Default + core::fmt::Debug,
-    N: Network<SocketAddr> + Send + Sync + 'static
+    N: Network<SocketAddr> + Send + Sync + 'static,
+    M: RaftStateMachine + Send + Sync + 'static,
 {
     pub fn new(config: RaftConfig) -> Self {
 
         let raft: Arc<RaftNode<S>> = Arc::new(config.clone().into());
+        let state_machine: Arc<Mutex<M>> = Arc::new(Mutex::new(M::default()));
         let (socket_write_sender, socket_write_receiver) = mpsc::unbounded_channel();
         let (socket_read_sender, socket_read_receiver ) = mpsc::unbounded_channel();
 
@@ -364,6 +413,10 @@ where
         let (reset_election_timer_tx, reset_election_timer_rx) = mpsc::unbounded_channel();
         let (stop_election_timer_tx, stop_election_timer_rx) = mpsc::unbounded_channel();
 
+        let (on_command_received_tx, on_command_received_rx) = mpsc::unbounded_channel();
+        let (on_command_applied_tx, on_command_applied_rx) = mpsc::unbounded_channel();
+
+
         let server: RaftServer<N> = RaftServer::new(
             config.clone(),
             socket_read_sender,
@@ -384,34 +437,43 @@ where
             true
         );
 
+        let election_rx = ElectionRx {
+            has_become_candidate_rx,
+            has_become_leader_rx
+        };
+        let election_tx = ElectionTx {
+            has_become_candidate_tx,
+            has_become_leader_tx
+        };
+        let state_rx = StateRx {
+            on_commit_index_updated_rx,
+            on_last_log_index_updated_rx,
+            on_match_index_updated_rx,
+        };
+        let state_tx = StateTx {
+            on_commit_index_updated_tx,
+            on_last_log_index_updated_tx,
+            on_match_index_updated_tx
+        };
+
+        let timer_rx = TimerRx { election_timer_rx, on_heartbeat_timer_rx };
+        let timer_tx = TimerTx { election_timer_tx, reset_election_timer_tx, reset_heartbeat_tx, stop_heartbeat_tx, stop_election_timer_tx };
+
+        let rpc_rx = RPCRx { request_vote_rx, append_entries_rx, request_vote_response_rx, append_entries_response_rx, request_vote_outbound_rx, append_entries_outbound_rx };
+        let rpc_tx = RPCTx { request_vote_tx, append_entries_tx, request_vote_response_tx, append_entries_response_tx, request_vote_outbound_tx, append_entries_outbound_tx };
+
+        let client_tx = ClientTx { on_command_received_tx, on_command_applied_tx };
+        let client_rx = ClientRx { on_command_received_rx };
+
         Self {
             _core: raft,
             _server: server,
+            _state_machine: state_machine,
             _election_timer: election_timer,
             _heartbeat_timer: heartbeat_timer,
             config,
-            election_rx: ElectionRx { 
-                has_become_leader_rx, 
-                has_become_candidate_rx, 
-            },
-            election_tx: ElectionTx {
-                has_become_candidate_tx,
-                has_become_leader_tx,
-            },
-            state_rx: StateRx { 
-                on_commit_index_updated_rx, 
-                on_last_log_index_updated_rx, 
-                on_match_index_updated_rx
-            },
-            state_tx: StateTx { 
-                on_commit_index_updated_tx, 
-                on_last_log_index_updated_tx, 
-                on_match_index_updated_tx
-            },
-            timer_rx: TimerRx { election_timer_rx, on_heartbeat_timer_rx },
-            timer_tx: TimerTx { election_timer_tx, reset_election_timer_tx, reset_heartbeat_tx, stop_heartbeat_tx, stop_election_timer_tx },
-            rpc_rx: RPCRx { request_vote_rx, append_entries_rx, request_vote_response_rx, append_entries_response_rx, request_vote_outbound_rx, append_entries_outbound_rx },
-            rpc_tx: RPCTx { request_vote_tx, append_entries_tx, request_vote_response_tx, append_entries_response_tx, request_vote_outbound_tx, append_entries_outbound_tx },
+            channels_tx: ChannelsTx { election: election_tx, timer: timer_tx, client: client_tx, state: state_tx, rpc: rpc_tx },
+            channels_rx: ChannelsRx { election: election_rx, timer: timer_rx, client: client_rx, state: state_rx, rpc: rpc_rx },
             socket_read_receiver,
             socket_write_sender
         }
@@ -420,24 +482,28 @@ where
 
     pub async fn run(self) -> color_eyre::Result<()> {
 
+        let state_machine = self._state_machine.clone();
         let raft = self._core.clone();
         let election_timer = self._election_timer;
         let heartbeat_timer = self._heartbeat_timer;
 
-        let rpc_rx = self.rpc_rx;
-        let rpc_tx = self.rpc_tx.clone();
+        let rpc_rx = self.channels_rx.rpc;
+        let rpc_tx = self.channels_tx.rpc.clone();
 
         let socket_read_receiver = self.socket_read_receiver;
         let socket_write_sender = self.socket_write_sender.clone();
 
-        let election_rx = self.election_rx;
-        let election_tx = self.election_tx.clone();
+        let election_rx = self.channels_rx.election;
+        let election_tx = self.channels_tx.election.clone();
 
-        let timer_rx = self.timer_rx;
-        let timer_tx = self.timer_tx.clone();
+        let timer_rx = self.channels_rx.timer;
+        let timer_tx = self.channels_tx.timer.clone();
 
-        let state_rx = self.state_rx;
-        let state_tx = self.state_tx.clone();
+        let state_rx = self.channels_rx.state;
+        let state_tx = self.channels_tx.state.clone();
+
+        let client_rx = self.channels_rx.client;
+        let client_tx = self.channels_tx.client.clone();
 
         let t1 = tokio::spawn(async move {
             process_rpc(
@@ -447,9 +513,12 @@ where
                 state_tx,
                 timer_rx,
                 timer_tx,
+                client_rx,
+                client_tx,
                 socket_read_receiver,
                 socket_write_sender,
                 raft,
+                state_machine,
                 rpc_tx,
                 rpc_rx
             ).await
@@ -460,7 +529,7 @@ where
         let mut rng = rand::thread_rng();
         let random_delay = rng.gen_range(3000..5000);
 
-        let timer_tx = self.timer_tx.clone();
+        let timer_tx = self.channels_tx.timer.clone();
 
         tokio::spawn(async move {
             sleep(Duration::from_millis(random_delay)).await;

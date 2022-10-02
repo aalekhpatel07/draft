@@ -4,11 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = ["dep:draft-state-machine"]
 
 [dependencies]
 color-eyre = "0.6.2"
 hyper = "0.14.20"
 draft-core =  { version = "0.1.0", path = "../draft-core" }
+draft-state-machine = { version = "0.1.0", path = "../draft-state-machine", features = ["draft-mini-redis"], optional = true }
 tokio = { version = "1.20.1", features = ["full"] }
 anyhow = { version = "*" }
 rmp-serde = { version = "*" }
@@ -27,3 +30,4 @@ rand = "0.8.5"
 serde_json = "1.0.85"
 futures = "0.3.24"
 structopt = "0.3.26"
+bytes = "1.2.1"

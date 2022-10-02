@@ -24,11 +24,15 @@ pub type Shared<T> = Arc<Mutex<T>>;
 
 pub trait Term {
     fn term(&self) -> usize;
+    fn log(&self) -> Bytes;
 }
 
 impl Term for Log {
     fn term(&self) -> usize {
         self.0
+    }
+    fn log(&self) -> Bytes {
+        self.1.clone()
     }
 }
 
@@ -415,6 +419,31 @@ where
 
     pub fn nodes(&self) -> Vec<usize> {
         self.cluster.keys().map(|&k| k).collect_vec()
+    }
+
+    pub fn incr_last_applied_and_get_log_entries_to_apply(&self) -> Vec<Bytes> {
+
+        let mut volatile_state_guard = self.volatile_state.lock().unwrap();
+        let persistent_state_guard = self.persistent_state.lock().unwrap();
+
+        let mut entries = vec![];
+
+        if volatile_state_guard.commit_index > volatile_state_guard.last_applied {
+
+            entries = 
+                persistent_state_guard
+                .log
+                [volatile_state_guard.last_applied+1..volatile_state_guard.commit_index+1]
+                .iter()
+                .map(|x| x.log().clone())
+                .collect();
+            
+            volatile_state_guard.last_applied = volatile_state_guard.commit_index;
+        }
+        drop(persistent_state_guard);
+        drop(volatile_state_guard);
+
+        entries
     }
 
     #[tracing::instrument(skip(self))]

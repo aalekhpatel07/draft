@@ -2,6 +2,9 @@
 members = [
 	"draft-core",
 	"draft-server",
+	"draft-state-machine",
+	"draft-client",
+	"draft-mini-redis",
 ]
 
 [profile.release]
