@@ -5,9 +5,9 @@ use draft_core::{
     VoteResponse,
     AppendEntriesResponse, 
     RaftRPC,
-    AppendEntriesRequestWithoutLogs
+    AppendEntriesRequestWithoutLogs, BufferBackend
 };
-use draft_state_machine::RaftStateMachine;
+use draft_state_machine::{RaftStateMachine, RaftChannels};
 use tracing::{Instrument, info_span};
 use crate::{VoteRequest, AppendEntriesRequest, Peer, PeerData, RaftTimeout, RaftInterval, get_random_duration};
 use rand::Rng;
@@ -101,7 +101,7 @@ pub struct ChannelsTx {
     pub timer: TimerTx,
     pub client: ClientTx,
     pub state: StateTx,
-    pub rpc: RPCTx
+    pub rpc: RPCTx,
 }
 
 #[derive(Debug)]
@@ -115,20 +115,20 @@ pub struct ChannelsRx {
 
 
 #[derive(Debug)]
-pub struct RaftRuntime<S, N, M> {
+pub struct RaftRuntime<S=BufferBackend, N=tokio::net::UdpSocket> {
     _core: Arc<RaftNode<S>>,
-    _state_machine: Arc<Mutex<M>>,
     _server: RaftServer<N>,
     _election_timer: RaftTimeout,
     _heartbeat_timer: RaftInterval,
     pub config: RaftConfig,
     channels_tx: ChannelsTx,
     channels_rx: ChannelsRx,
+    pub state_machine: RaftChannels,
     socket_read_receiver: UnboundedReceiver<PeerData>,
     socket_write_sender: UnboundedSender<PeerData>,
 }
 
-pub async fn process_rpc<S: Storage + Default + core::fmt::Debug, M: RaftStateMachine>
+pub async fn process_rpc<S: Storage + Default + core::fmt::Debug>
 (
     mut election_rx: ElectionRx,
     election_tx: ElectionTx,
@@ -146,7 +146,6 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug, M: RaftStateMa
     socket_write_sender: UnboundedSender<PeerData>,
 
     raft: Arc<RaftNode<S>>,
-    state_machine: Arc<Mutex<M>>,
     rpc_tx: RPCTx,
     mut rpc_rx: RPCRx
 ) -> color_eyre::Result<()> {
@@ -288,14 +287,14 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug, M: RaftStateMa
             Some(_) = state_rx.on_commit_index_updated_rx.recv() => {
 
                 let entries_to_apply = raft.incr_last_applied_and_get_log_entries_to_apply();
-                let sm_guard = state_machine.lock().unwrap();
+                // let sm_guard = state_machine.lock().unwrap();
                 // let state_machine_responses: Vec<Bytes> = entries_to_apply
                 //     .into_iter()
                 //     .map(
                 //         async |entry| sm_guard.apply(entry).await.unwrap()
                 //     )
                 //     .collect();
-                drop(sm_guard);
+                // drop(sm_guard);
                 // for resp in state_machine_responses {
                 //     client_tx.on_command_applied_tx.send(())?; // FIXME: Think about how and what to send to client.
                 // }
@@ -378,16 +377,14 @@ pub async fn send_rpc<Data: Serialize + DeserializeOwned + core::fmt::Debug>(
     }
 }
 
-impl<S, N, M> RaftRuntime<S, N, M> 
+impl<S, N> RaftRuntime<S, N> 
 where
     S: Storage + 'static + Send + Sync + Default + core::fmt::Debug,
     N: Network<SocketAddr> + Send + Sync + 'static,
-    M: RaftStateMachine + Send + Sync + 'static,
 {
-    pub fn new(config: RaftConfig) -> Self {
+    pub fn new(config: RaftConfig, channels: RaftChannels) -> Self {
 
         let raft: Arc<RaftNode<S>> = Arc::new(config.clone().into());
-        let state_machine: Arc<Mutex<M>> = Arc::new(Mutex::new(M::default()));
         let (socket_write_sender, socket_write_receiver) = mpsc::unbounded_channel();
         let (socket_read_sender, socket_read_receiver ) = mpsc::unbounded_channel();
 
@@ -468,7 +465,7 @@ where
         Self {
             _core: raft,
             _server: server,
-            _state_machine: state_machine,
+            state_machine: channels,
             _election_timer: election_timer,
             _heartbeat_timer: heartbeat_timer,
             config,
@@ -482,7 +479,6 @@ where
 
     pub async fn run(self) -> color_eyre::Result<()> {
 
-        let state_machine = self._state_machine.clone();
         let raft = self._core.clone();
         let election_timer = self._election_timer;
         let heartbeat_timer = self._heartbeat_timer;
@@ -518,7 +514,6 @@ where
                 socket_read_receiver,
                 socket_write_sender,
                 raft,
-                state_machine,
                 rpc_tx,
                 rpc_rx
             ).await

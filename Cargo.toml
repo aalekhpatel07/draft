@@ -4,7 +4,7 @@ members = [
 	"draft-server",
 	"draft-state-machine",
 	"draft-client",
-	"draft-mini-redis",
+	"examples/*"
 ]
 
 [profile.release]

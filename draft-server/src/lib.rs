@@ -8,4 +8,4 @@ pub use network::*;
 pub use runtime::*;
 pub use timer::*;
 
-pub use draft_core::{AppendEntriesRequest, VoteRequest};
+pub use draft_core::{AppendEntriesRequest, VoteRequest, config::load_from_file, BufferBackend};

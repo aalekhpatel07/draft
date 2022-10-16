@@ -11,7 +11,7 @@ default = ["dep:draft-state-machine"]
 color-eyre = "0.6.2"
 hyper = "0.14.20"
 draft-core =  { version = "0.1.0", path = "../draft-core" }
-draft-state-machine = { version = "0.1.0", path = "../draft-state-machine", features = ["draft-mini-redis"], optional = true }
+draft-state-machine = { version = "0.1.0", path = "../draft-state-machine", optional = true }
 tokio = { version = "1.20.1", features = ["full"] }
 anyhow = { version = "*" }
 rmp-serde = { version = "*" }
