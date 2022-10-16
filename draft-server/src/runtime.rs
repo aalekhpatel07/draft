@@ -222,6 +222,7 @@ pub async fn process_rpc<S: Storage + Default + core::fmt::Debug, M: RaftStateMa
                 tracing::trace!("Received AppendEntriesResponse from peer ({:#?}), ", peer_id);
                 
                 raft.handle_append_entries_response(peer_id, sent_request, response, rpc_tx.append_entries_outbound_tx.clone());
+                state_tx.on_match_index_updated_tx.send(())?;
             },
 
             // Election timer expired. Neither did we receive any AppendEntriesRPC nor
