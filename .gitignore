@@ -2,3 +2,5 @@ target
 .vscode/
 .idea/
 codecov
+examples
+cluster-size-5
